@@ -13,13 +13,33 @@ DELTA = 1 / 6  # 单时段时长 h
 
 @dataclass(frozen=True)
 class DayData:
-    p: np.ndarray       # 电价 元/kWh，(144,)
-    ell: np.ndarray     # 负载需电量 kWh
-    r: np.ndarray       # 光伏发电量 kWh
-    labels: np.ndarray  # 附件1 行标签（时段末点），仅用于展示
+    """附件1 典型日数据（kW 已预折算为 kWh）。
+
+    Attributes:
+        p: 逐时段电价，元/kWh，shape (144,)。
+        ell: 逐时段负载需电量，kWh，shape (144,)。
+        r: 逐时段光伏发电量，kWh，shape (144,)。
+        labels: 附件1 行标签（时段末点），仅用于展示。
+    """
+
+    p: np.ndarray
+    ell: np.ndarray
+    r: np.ndarray
+    labels: np.ndarray
 
 
 def load_day1(path: Path | None = None) -> DayData:
+    """加载附件1 典型日数据并完成 kW → kWh 预折算。
+
+    Args:
+        path: 附件1 xlsx 路径；缺省用 docs/附件/附件1.xlsx。
+
+    Returns:
+        DayData: 折算后的当日数据。
+
+    Raises:
+        ValueError: 列名或行数不符合预期。
+    """
     df = pd.read_excel(path or ATTACH / "附件1.xlsx")
     required = ["时间", "电价", "小区负载", "光伏发电预测功率"]
     if list(df.columns) != required or len(df) != 144:

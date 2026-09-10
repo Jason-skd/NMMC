@@ -8,12 +8,17 @@
 import argparse
 from pathlib import Path
 
+import numpy as np
+
 from nmmc.data import ATTACH, load_day1
-from nmmc.extract import TEMPLATE, Result1Xlsx, diagnostics, table1_rows, table2_rows
+from nmmc.extract import (TEMPLATE, DetailsCsv, Extractor, Result1Xlsx,
+                          SummaryMd, diagnostics, table1_rows, table2_rows)
 from nmmc.lp import T, Solution, solve
+from nmmc.plot import SchedulePlot
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建 prob1 命令行参数解析器。"""
     parser = argparse.ArgumentParser(description="C 题问题1：典型日计划购电 LP")
     parser.add_argument("--input", type=Path, default=ATTACH / "附件1.xlsx",
                         help="附件1 数据路径")
@@ -27,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def print_solution(sol: Solution) -> None:
+    """向控制台打印论文表 1 / 表 2 结果。
+
+    Args:
+        sol: LP 最优解。
+    """
     print("== 表1 指定时段购电量 (kWh) ==")
     for label, val in table1_rows(sol):
         print(f"  {label:>12}  {val:12.2f}")
@@ -38,27 +48,50 @@ def print_solution(sol: Solution) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """prob1 主流程：加载 → 求解 → 打印诊断与对照 → 依次运行导出器。
+
+    Args:
+        argv: 命令行参数；缺省取 sys.argv。
+    """
     args = build_parser().parse_args(argv)
     day = load_day1(args.input)
     sol = solve(day.p, day.ell, day.r, s0_fixed=args.s0_fixed)
 
     print_solution(sol)
+    diag = diagnostics(sol, day)
     print("== 诊断 ==")
-    for key, val in diagnostics(sol, day).items():
+    for key, val in diag.items():
         print(f"  {key}: {val}")
 
+    baselines: dict[str, float] = {}
     print("== 对照 ==")
     print(f"  Z* = {sol.cost:.2f} 元   S_0 = {sol.S[0]:.2f} kWh")
     if args.s0_fixed is None:
         sol6000 = solve(day.p, day.ell, day.r, s0_fixed=6000.0)
+        low, high = (float(q) for q in np.quantile(day.p, (0.35, 0.65)))
+        rule = solve(day.p, day.ell, day.r, rule_thresholds=(low, high))
+        baselines = {
+            "Z^6000": sol6000.cost,
+            "S_0 决策化收益": sol6000.cost - sol.cost,
+            "Z^rule": rule.cost,
+            "规则节省比例": (rule.cost - sol.cost) / rule.cost * 100.0,
+        }
         print(f"  Z^6000 = {sol6000.cost:.2f} 元   "
-              f"S_0 决策化收益 = {sol6000.cost - sol.cost:.2f} 元")
+              f"S_0 决策化收益 = {baselines['S_0 决策化收益']:.2f} 元")
+        print(f"  Z^rule = {rule.cost:.2f} 元   "
+              f"优化相对规则节省 = {baselines['规则节省比例']:.2f}%")
         for delta in (-200.0, 200.0):  # S_0 平坦性探测
             probe = solve(day.p, day.ell, day.r, s0_fixed=sol.S[0] + delta)
             print(f"  S_0 钉在 {sol.S[0] + delta:.0f} 时 Z = {probe.cost:.2f} 元")
 
-    path = Result1Xlsx(args.template).extract(day, sol, args.output_dir)
-    print(f"已导出 {path}")
+    extractors: list[Extractor] = [
+        Result1Xlsx(args.template),
+        DetailsCsv(),
+        SchedulePlot(),
+        SummaryMd(diag, baselines),
+    ]
+    for ex in extractors:
+        print(f"已导出 {ex.extract(day, sol, args.output_dir)}")
 
 
 if __name__ == "__main__":
