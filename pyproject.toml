@@ -2,4 +2,11 @@
 name = "nmmc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "ipykernel>=7.3.0",
+    "matplotlib>=3.11.1",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.5",
+    "pulp>=3.3.2",
+    "scipy>=1.18.1",
+]
