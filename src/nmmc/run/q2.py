@@ -9,11 +9,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.data.year import ALPHA_RT, KAPPA, NU_END, S0_INIT, YearData
+from nmmc.data.year import YearData
 from nmmc.model.forecast import (ForecastConfig, build_scenarios, forecast_load,
                                  forecast_pv, reference_path)
 from nmmc.model.lp import ETA, T
-from nmmc.model.q2 import solve_planning, solve_recourse
+from nmmc.model.q2 import KAPPA, NU_END, solve_planning, solve_recourse
+
+S0_INIT = 6000.0  # 2025.1.1 0:00 储电量，全年 SOC 链的锚（文档 §2.2）
+ALPHA_RT = 0.65   # MPC 参考路径分位（执行层独立调参维度，文档 §7.2）
 
 
 @dataclass

@@ -11,11 +11,12 @@ from pathlib import Path
 
 from nmmc.data import ATTACH
 from nmmc.data.day import load_day1
-from nmmc.data.year import ALPHA_RT, DAYS, KAPPA, NU_END, WARMUP_DAYS, load_year
+from nmmc.data.year import DAYS, load_year
 from nmmc.model.forecast import ForecastConfig
+from nmmc.model.q2 import KAPPA, NU_END
 from nmmc.report.q2 import (TEMPLATE, DetailsCsv, Result2Xlsx, SummaryMd,
-                            summarize)
-from nmmc.run.q2 import rollout
+                            WARMUP_DAYS, summarize)
+from nmmc.run.q2 import ALPHA_RT, rollout
 
 
 def build_parser() -> argparse.ArgumentParser:

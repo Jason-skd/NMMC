@@ -13,13 +13,16 @@ import openpyxl
 import pandas as pd
 
 from nmmc.data import ATTACH
-from nmmc.data.year import EPS_EMERG, KAPPA, WARMUP_DAYS, YearData
+from nmmc.data.year import YearData
 from nmmc.model.lp import ETA, T
+from nmmc.model.q2 import KAPPA
+from nmmc.report.common import PAPER_SLOTS, md_table, segment_label
 from nmmc.run.q2 import DayResult
 
 TEMPLATE = ATTACH / "附件5" / "result2.xlsx"
+WARMUP_DAYS = 31      # 1.1–1.31 暖机期，完整模拟但不交付（文档 §1）
+EPS_EMERG = 1e-6      # 紧急购电报表阈值，kWh
 PAPER_DATES = ("2025-03-20", "2025-06-21", "2025-09-23", "2025-12-21")
-PAPER_SLOTS = [6 * h + 1 for h in (10, 12, 14, 16, 18, 20)]  # t = 61..121
 BLOCK_LABELS = [f"{4 * k}:00-{4 * (k + 1)}:00" for k in range(6)]
 
 
@@ -52,13 +55,6 @@ def emergency_segments(u: np.ndarray,
         out.append((i, j, float(u[i:j + 1].sum())))
         i = j + 1
     return out
-
-
-def segment_label(i_a: int, i_b: int) -> str:
-    """连续段 [i_a, i_b]（0 基）的填报标签 [i_a·Δ, (i_b+1)·Δ]，如 13:00-13:30。"""
-    def hm(minutes: int) -> str:
-        return f"{minutes // 60:02d}:{minutes % 60:02d}"
-    return f"{hm(i_a * 10)}-{hm((i_b + 1) * 10)}"
 
 
 def day_checks(day: DayResult, year: YearData) -> dict[str, float | int]:
@@ -135,15 +131,6 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray) -> dict:
         "光伏预报 MAE": float(err_r.mean()),
         "光伏预报 p90": float(np.quantile(err_r, 0.9)),
     }
-
-
-def _md_table(headers: list[str], rows: list[tuple]) -> str:
-    """把表头与数据行渲染为 markdown 表格文本。"""
-    lines = ["| " + " | ".join(headers) + " |",
-             "|" + "---|" * len(headers)]
-    for row in rows:
-        lines.append("| " + " | ".join(str(x) for x in row) + " |")
-    return "\n".join(lines)
 
 
 def _py_date(day: DayResult, year: YearData) -> dt.date:
@@ -249,7 +236,7 @@ class SummaryMd:
         """写出 q2_summary.md 并返回路径。"""
         s = self.summary
         money = lambda x: f"{x:,.2f} 元"
-        core = _md_table(["指标", "数值"], [
+        core = md_table(["指标", "数值"], [
             ("Z^online（交付）", money(s["Z_online"])),
             ("Z^ex-post", money(s["Z_expost"])),
             ("Z^PI", money(s["Z_pi"])),
@@ -263,11 +250,11 @@ class SummaryMd:
             ("SOC 均值 / 范围", f"{s['SOC 均值']:,.1f} kWh / "
              f"{s['SOC 范围'][0]:,.1f} ~ {s['SOC 范围'][1]:,.1f}"),
         ])
-        checks = _md_table(["检查项", "数值"], [
+        checks = md_table(["检查项", "数值"], [
             (k, f"{s[k]:.6f}" if isinstance(s[k], float) else s[k])
             for k in ("C6 对账残差 max", "C7 能量守恒残差 max", "C8 max(c·d)",
                       "C8 max(u·w)", "性质8 u∧c 时段数", "C9 序关系违例天数")])
-        skill = _md_table(["预报", "MAE (kWh/时段)", "p90 (kWh/时段)"], [
+        skill = md_table(["预报", "MAE (kWh/时段)", "p90 (kWh/时段)"], [
             ("负载", f"{s['负载预报 MAE']:.2f}", f"{s['负载预报 p90']:.2f}"),
             ("光伏", f"{s['光伏预报 MAE']:.2f}", f"{s['光伏预报 p90']:.2f}")])
         tab_rows = []
@@ -279,7 +266,7 @@ class SummaryMd:
             vals = [f"{day.g[t - 1]:.2f}" for t in PAPER_SLOTS]
             tab_rows.append((date, *vals, f"{day.g.sum():.2f}",
                              f"{day.z:.2f}"))
-        table1 = _md_table(
+        table1 = md_table(
             ["日期"] + [f"t={t}" for t in PAPER_SLOTS] + ["全天购电量", "购电费"],
             tab_rows)
         text = f"""# 问题 2 求解结果（{self.cfg_label}）

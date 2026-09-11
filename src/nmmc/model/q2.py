@@ -19,6 +19,9 @@ from scipy.sparse import coo_matrix
 
 from nmmc.model.lp import ETA, E_MAX_PER, S_MAX, S_MIN, T
 
+KAPPA = 5.0    # 紧急购电倍率
+NU_END = 0.472  # 日末储电量估值锚，元/kWh（文档 §2.3）
+
 
 @dataclass
 class PlanResult:

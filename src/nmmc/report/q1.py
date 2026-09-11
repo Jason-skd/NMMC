@@ -1,4 +1,4 @@
-"""结果导出：统一 Extractor 协议，每个产物一个提取器。
+"""题1 导出器：官方模板 xlsx、明细 CSV、摘要 markdown。
 
 表1/表2 行与诊断量也在此提供——它们是从最优解"提取信息"的公共层，
 命令行打印与文件导出共用。
@@ -14,36 +14,21 @@ from nmmc.data import ATTACH
 from nmmc.data.day import DayData
 from nmmc.model.lp import ETA, T
 from nmmc.model.q1 import Solution
+from nmmc.report.common import PAPER_SLOTS, interval_label, md_table
 
 TEMPLATE = ATTACH / "附件5" / "result1.xlsx"
 
-PAPER_SLOTS = [6 * h + 1 for h in (10, 12, 14, 16, 18, 20)]  # t = 61..121
 
-
-class Extractor(Protocol):
+class Exporter(Protocol):
     """导出器协议：从最优解导出一份产物。
 
-    每个实现类负责一种产物（xlsx / csv / png / md），CLI 组装提取器列表
+    每个实现类负责一种产物（xlsx / csv / png / md），CLI 组装导出器列表
     依次运行；结构化满足协议即可，无需显式继承。
     """
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """写出产物并返回文件路径。"""
         ...
-
-
-def interval_label(t: int) -> str:
-    """返回时段 t 的物理区间标签。
-
-    Args:
-        t: 时段编号，1..144（标签为时段末点，t=1 即 [00:00, 00:10)）。
-
-    Returns:
-        区间标签字符串，如 "00:00-00:10"。
-    """
-    def hm(m):
-        return f"{m // 60:02d}:{m % 60:02d}"
-    return f"{hm((t - 1) * 10)}-{hm(t * 10)}"
 
 
 def table1_rows(sol: Solution) -> list[tuple[str, float]]:
@@ -108,15 +93,6 @@ def _fmt(val) -> str:
     return f"{val:.4f}"
 
 
-def _md_table(headers: list[str], rows: list[tuple]) -> str:
-    """把表头与数据行渲染为 markdown 表格文本。"""
-    lines = ["| " + " | ".join(headers) + " |",
-             "|" + "---|" * len(headers)]
-    for row in rows:
-        lines.append("| " + " | ".join(str(x) for x in row) + " |")
-    return "\n".join(lines)
-
-
 class Result1Xlsx:
     """按官方模板行序填写 result1.xlsx（模板行 i ↔ 时段 t=i，不改标签）。
 
@@ -127,7 +103,7 @@ class Result1Xlsx:
     def __init__(self, template: Path = TEMPLATE):
         self.template = template
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """写出 result1.xlsx（计划购电量 + 充放电量 + 储电量）并返回路径。"""
         wb = openpyxl.load_workbook(self.template)
         ws = wb["计划购电量"]
@@ -148,7 +124,7 @@ class Result1Xlsx:
 class DetailsCsv:
     """逐时段调度明细 CSV：t、时间段、g/c/d/w、S、λ/ν。"""
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """写出 q1_details.csv 并返回路径。"""
         df = pd.DataFrame({
             "t": np.arange(1, T + 1),
@@ -177,7 +153,7 @@ class SummaryMd:
         self.diag = diag or {}
         self.baselines = baselines or {}
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """写出 q1_summary.md 并返回路径。"""
         z_base = self.diag.get("Z_base 无电池直买", float("nan"))
         saving = z_base - sol.cost
@@ -195,19 +171,19 @@ class SummaryMd:
                 unit = " %" if key == "规则节省比例" else " 元"
                 core.append((label, f"{val:.4f}{unit}"))
 
-        t1 = _md_table(["时间段", "购电量（kWh）"],
+        t1 = md_table(["时间段", "购电量（kWh）"],
                        [(lbl, f"{val:.4f}") for lbl, val in table1_rows(sol)])
-        t2 = _md_table(["时间段", "充电量（kWh，电池侧）", "放电量（kWh，电池侧）"],
+        t2 = md_table(["时间段", "充电量（kWh，电池侧）", "放电量（kWh，电池侧）"],
                        [(lbl, f"{ch:.4f}", f"{dis:.4f}")
                         for lbl, ch, dis in table2_rows(sol)])
-        checks = _md_table(["检查项", "数值"],
+        checks = md_table(["检查项", "数值"],
                            [(k, _fmt(v)) for k, v in self.diag.items()])
 
         text = f"""# 问题 1 求解结果
 
 ## 核心结果
 
-{_md_table(["指标", "数值"], core)}
+{md_table(["指标", "数值"], core)}
 
 ## 表 1 指定时段购电量
 
