@@ -9,15 +9,14 @@
 变量布局（每情景块）：[c(T'), d(T'), u(T'), w(T'), S(T'+1)]。
 等式约束（每块）：T' 供需平衡 g+d+u−c−w = n 与 T' SOC 递推
 S_t − S_{t−1} − ηc_t + d_t/η = 0。S_0 由 bounds 钉在给定初值。
-物理常数沿用题1档（nmmc.model.lp）。
+物理常数、SOC 递推块与稀疏求解封装沿用 nmmc.model.lp。
 """
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.optimize import linprog
-from scipy.sparse import coo_matrix
 
-from nmmc.model.lp import ETA, E_MAX_PER, S_MAX, S_MIN, T
+from nmmc.model.lp import (E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp,
+                           soc_recursion)
 
 KAPPA = 5.0    # 紧急购电倍率
 NU_END = 0.472  # 日末储电量估值锚，元/kWh（文档 §2.3）
@@ -54,20 +53,6 @@ class PathResult:
     obj: float
 
 
-def _solve(obj: np.ndarray, rows: list[np.ndarray], cols: list[np.ndarray],
-           vals: list[np.ndarray], b: np.ndarray, lo: np.ndarray,
-           hi: np.ndarray) -> np.ndarray:
-    """组装稀疏等式约束 LP 并求解 HiGHS，返回解向量。"""
-    a = coo_matrix(
-        (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
-        shape=(len(b), len(obj))).tocsr()
-    res = linprog(obj, A_eq=a, b_eq=b,
-                  bounds=np.column_stack([lo, hi]), method="highs")
-    if not res.success:
-        raise RuntimeError(f"LP 求解失败: {res.message}")
-    return res.x
-
-
 def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
                    s0: float, nu_end: float,
                    kappa: float) -> PlanResult:
@@ -94,7 +79,7 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
     obj[:T] = p
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
-    b = np.empty(2 * T * n_s)
+    b = np.zeros(2 * T * n_s)
     rows: list[np.ndarray] = []
     cols: list[np.ndarray] = []
     vals: list[np.ndarray] = []
@@ -110,11 +95,11 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         vals += [np.ones(T), -np.ones(T), np.ones(T), np.ones(T), -np.ones(T)]
         b[r] = scn[s]
         # SOC 递推：S_t − S_{t−1} − ηc + d/η = 0
-        r = s * 2 * T + T + tt
-        rows += [r, r, r, r]
-        cols += [o_s + 1 + tt, o_s + tt, o_c + tt, o_d + tt]
-        vals += [np.ones(T), -np.ones(T), np.full(T, -ETA), np.full(T, 1.0 / ETA)]
-        b[r] = 0.0
+        soc_rows, soc_cols, soc_vals = soc_recursion(T, s * 2 * T + T,
+                                                     o_s, o_c, o_d)
+        rows += soc_rows
+        cols += soc_cols
+        vals += soc_vals
         pi = probs[s]
         obj[o_u:o_u + T] = pi * kappa * p
         obj[o_s + T] = -pi * nu_end
@@ -125,7 +110,7 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         lo[o_s:o_s + T + 1] = S_MIN
         hi[o_s:o_s + T + 1] = S_MAX
         lo[o_s] = hi[o_s] = s0
-    x = _solve(obj, rows, cols, vals, b, lo, hi)
+    x, _, _ = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
     return PlanResult(g=x[:T], z_tilde=float(obj @ x))
 
 
@@ -165,14 +150,15 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     hi[o_s:o_s + n_t + 1] = S_MAX
     lo[o_s] = hi[o_s] = s_start
     tt = np.arange(n_t)
-    rows = [tt, tt, tt, tt] + [n_t + tt] * 4
-    cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt,
-            o_s + 1 + tt, o_s + tt, o_c + tt, o_d + tt]
-    vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t),
-            np.ones(n_t), -np.ones(n_t), np.full(n_t, -ETA),
-            np.full(n_t, 1.0 / ETA)]
+    rows = [tt, tt, tt, tt]
+    cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
+    vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t)]
+    soc_rows, soc_cols, soc_vals = soc_recursion(n_t, n_t, o_s, o_c, o_d)
+    rows += soc_rows
+    cols += soc_cols
+    vals += soc_vals
     b = np.concatenate([net - g, np.zeros(n_t)])
-    x = _solve(obj, rows, cols, vals, b, lo, hi)
+    x, _, _ = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
     return PathResult(
         c=x[o_c:o_c + n_t], d=x[o_d:o_d + n_t],
         u=x[o_u:o_u + n_t], w=x[o_w:o_w + n_t],
