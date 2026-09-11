@@ -13,8 +13,8 @@ import numpy as np
 from nmmc.data import ATTACH, load_day1
 from nmmc.extract import (TEMPLATE, DetailsCsv, Extractor, Result1Xlsx,
                           SummaryMd, diagnostics, table1_rows, table2_rows)
-from nmmc.lp import T, Solution, solve
-from nmmc.plot import SchedulePlot
+from nmmc.lp import S_MAX, S_MIN, T, Solution, solve
+from nmmc.plot import DataOverview, DualEconomics, S0Basin, SchedulePlot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,13 +83,29 @@ def main(argv: list[str] | None = None) -> None:
         for delta in (-200.0, 200.0):  # S_0 平坦性探测
             probe = solve(day.p, day.ell, day.r, s0_fixed=sol.S[0] + delta)
             print(f"  S_0 钉在 {sol.S[0] + delta:.0f} 时 Z = {probe.cost:.2f} 元")
+        # S_0 敏感性扫描（供盆地图）
+        s0_grid = np.arange(S_MIN, S_MAX + 1.0, 200.0)
+        if abs((sol.S[0] - S_MIN) % 200.0) > 1e-6:
+            s0_grid = np.sort(np.append(s0_grid, sol.S[0]))
+        s0_costs = [solve(day.p, day.ell, day.r, s0_fixed=float(v)).cost
+                    for v in s0_grid]
+        print(f"  S_0 敏感性扫描：{len(s0_grid)} 个点，"
+              f"费用区间 [{min(s0_costs):.2f}, {max(s0_costs):.2f}] 元")
+        s0_basin = S0Basin(s0_grid, s0_costs, float(sol.S[0]), sol.cost,
+                           sol6000.cost)
+    else:
+        s0_basin = None
 
     extractors: list[Extractor] = [
         Result1Xlsx(args.template),
         DetailsCsv(),
         SchedulePlot(),
+        DataOverview(),
+        DualEconomics(),
         SummaryMd(diag, baselines),
     ]
+    if s0_basin is not None:
+        extractors.append(s0_basin)
     for ex in extractors:
         print(f"已导出 {ex.extract(day, sol, args.output_dir)}")
 
