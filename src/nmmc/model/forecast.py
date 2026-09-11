@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.q2.data import R_EPS, T, YearData
+from nmmc.data.year import R_EPS, T, YearData
 
 
 @dataclass(frozen=True)

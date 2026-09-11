@@ -10,11 +10,13 @@ from pathlib import Path
 
 import numpy as np
 
-from nmmc.data import ATTACH, load_day1
-from nmmc.extract import (TEMPLATE, DetailsCsv, Extractor, Result1Xlsx,
-                          SummaryMd, diagnostics, table1_rows, table2_rows)
-from nmmc.lp import S_MAX, S_MIN, T, Solution, solve
-from nmmc.plot import DataOverview, DualEconomics, S0Basin, SchedulePlot
+from nmmc.data import ATTACH
+from nmmc.data.day import load_day1
+from nmmc.model.lp import S_MAX, S_MIN, T
+from nmmc.model.q1 import Solution, solve
+from nmmc.report.plot import DataOverview, DualEconomics, S0Basin, SchedulePlot
+from nmmc.report.q1 import (TEMPLATE, DetailsCsv, Extractor, Result1Xlsx,
+                            SummaryMd, diagnostics, table1_rows, table2_rows)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -10,11 +10,12 @@ import numpy as np
 import openpyxl
 import pandas as pd
 
-from nmmc.data import DayData
-from nmmc.lp import ETA, Solution, T
+from nmmc.data import ATTACH
+from nmmc.data.day import DayData
+from nmmc.model.lp import ETA, T
+from nmmc.model.q1 import Solution
 
-ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE = ROOT / "docs" / "附件" / "附件5" / "result1.xlsx"
+TEMPLATE = ATTACH / "附件5" / "result1.xlsx"
 
 PAPER_SLOTS = [6 * h + 1 for h in (10, 12, 14, 16, 18, 20)]  # t = 61..121
 

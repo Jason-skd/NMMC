@@ -1,14 +1,11 @@
-"""数据加载与预处理。功率（kW）一律在此预折算为电量（kWh），模型内不再出现 Δ。"""
+"""附件1 典型日数据加载。"""
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-ATTACH = ROOT / "docs" / "附件"
-
-DELTA = 1 / 6  # 单时段时长 h
+from nmmc.data import ATTACH, DELTA
 
 
 @dataclass(frozen=True)

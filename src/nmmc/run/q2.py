@@ -9,11 +9,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.lp import ETA, T
-from nmmc.q2.data import ALPHA_RT, KAPPA, NU_END, S0_INIT, YearData
-from nmmc.q2.forecast import (ForecastConfig, build_scenarios, forecast_load,
-                              forecast_pv, reference_path)
-from nmmc.q2.lp import solve_planning, solve_recourse
+from nmmc.data.year import ALPHA_RT, KAPPA, NU_END, S0_INIT, YearData
+from nmmc.model.forecast import (ForecastConfig, build_scenarios, forecast_load,
+                                 forecast_pv, reference_path)
+from nmmc.model.lp import ETA, T
+from nmmc.model.q2 import solve_planning, solve_recourse
 
 
 @dataclass

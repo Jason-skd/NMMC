@@ -9,7 +9,7 @@
 变量布局（每情景块）：[c(T'), d(T'), u(T'), w(T'), S(T'+1)]。
 等式约束（每块）：T' 供需平衡 g+d+u−c−w = n 与 T' SOC 递推
 S_t − S_{t−1} − ηc_t + d_t/η = 0。S_0 由 bounds 钉在给定初值。
-物理常数沿用题1档（nmmc.lp）。
+物理常数沿用题1档（nmmc.model.lp）。
 """
 from dataclasses import dataclass
 
@@ -17,7 +17,7 @@ import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import coo_matrix
 
-from nmmc.lp import ETA, E_MAX_PER, S_MAX, S_MIN, T
+from nmmc.model.lp import ETA, E_MAX_PER, S_MAX, S_MIN, T
 
 
 @dataclass

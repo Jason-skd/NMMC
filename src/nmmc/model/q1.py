@@ -1,4 +1,4 @@
-"""题1 LP 建模（题2-4 复用骨架）。
+"""题1 LP 建模。
 
 变量布局 x = [g(144), c(144), d(144), w(144), S(145)]，共 721 列：
     g  计划购电量 kWh（外网关口侧）
@@ -17,11 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import linprog
 
-T = 144
-ETA = 0.9                 # 单向充放电效率
-P_MAX = 5000.0            # kW，母线侧
-E_MAX_PER = P_MAX / 6     # 833.33 kWh，单时段充/放电量上限
-S_MIN, S_MAX = 1200.0, 10800.0
+from nmmc.model.lp import E_MAX_PER, ETA, S_MAX, S_MIN, T
 
 NG, NC, ND, NW, NS = 0, T, 2 * T, 3 * T, 4 * T
 N = 5 * T + 1

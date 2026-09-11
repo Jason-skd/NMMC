@@ -13,9 +13,9 @@ import openpyxl
 import pandas as pd
 
 from nmmc.data import ATTACH
-from nmmc.lp import ETA, T
-from nmmc.q2.data import EPS_EMERG, KAPPA, WARMUP_DAYS, YearData
-from nmmc.q2.execute import DayResult
+from nmmc.data.year import EPS_EMERG, KAPPA, WARMUP_DAYS, YearData
+from nmmc.model.lp import ETA, T
+from nmmc.run.q2 import DayResult
 
 TEMPLATE = ATTACH / "附件5" / "result2.xlsx"
 PAPER_DATES = ("2025-03-20", "2025-06-21", "2025-09-23", "2025-12-21")

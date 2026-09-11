@@ -17,8 +17,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 
-from nmmc.data import DayData
-from nmmc.lp import S_MAX, S_MIN, Solution, T
+from nmmc.data.day import DayData
+from nmmc.model.lp import S_MAX, S_MIN, T
+from nmmc.model.q1 import Solution
 
 SURFACE = "#fcfcfb"
 INK, INK2, MUTED = "#0b0b0b", "#52514e", "#898781"
