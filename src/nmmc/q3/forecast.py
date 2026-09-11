@@ -155,7 +155,7 @@ def build_scenarios(cfg: Q3Config, year: YearData,
     ε^R = (r − r̂)/max(r̂, r_ε)。池 = 近 resid_window 日（含当日阶段预报
     历史）中最新 ns 条阶段 m 残差曲线。提前期桶 {1–6, 7–12, 13–24} h
     与修订块对齐（文档 §4.3）：S-b 各桶独立洗牌拼接、S-a 整条全取、
-    S-c 各阶段混池有放回抽样。
+    S-c 跨阶段混池（m_ ≤ m）有放回抽样。
 
     Args:
         cfg: 题3 预报层配置。
@@ -183,9 +183,11 @@ def build_scenarios(cfg: Q3Config, year: YearData,
         return eps_l, eps_r
 
     if cfg.pool == "S-c":
-        flat = [(i, m_) for i in pool for m_ in range(4)][-cfg.ns:]
+        # 混池只取覆盖当前预报段的阶段（m_ ≤ m）：更晚阶段残差在近段
+        # 恒为 0（已实现前缀），混入会注入伪完美预见情景
+        flat = [(i, m_) for i in pool for m_ in range(m + 1)]
         draws = [flat[k] for k in rng.integers(0, len(flat), size=cfg.ns)]
-        pairs = [(year.ell[i] - hist[i][m_][0][seg],
+        pairs = [(year.ell[i][seg] - hist[i][m_][0][seg],
                   (year.r[i][seg] - hist[i][m_][1][seg])
                   / np.maximum(hist[i][m_][1][seg], R_EPS))
                  for i, m_ in draws]
