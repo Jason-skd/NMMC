@@ -293,7 +293,7 @@ class Q2Q3Delta:
         q2_csv: 题2 明细 CSV（date, z_online 两列），按日期与题3 报告期对齐。
     """
 
-    DEFAULT_Q2 = Path("results/q2/L1-P1-R2-smpc/q2_details.csv")
+    DEFAULT_Q2 = Path("results/legacy/q2/L1-P1-R2-smpc/q2_details.csv")
 
     def __init__(self, q2_csv: Path | None = None):
         self.q2_csv = Path(q2_csv) if q2_csv is not None else self.DEFAULT_Q2
