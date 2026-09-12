@@ -118,6 +118,46 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray
     }
 
 
+def metrics_row(label: str, epochs: tuple[int, ...], summary: dict
+                ) -> dict[str, float | int | str]:
+    """summarize 输出压平为聚合 CSV 行（snake 键，供消融/阶梯汇总）。"""
+    return {
+        "label": label,
+        "epochs": "-".join(str(6 * m) for m in epochs),
+        "days": summary["天数"],
+        "z_online": summary["Z_online"],
+        "z_expost": summary["Z_expost"],
+        "z_pi": summary["Z_pi"],
+        "evpi": summary["EVPI"],
+        "base_fee": summary["基础购电费"],
+        "dev_fee": summary["偏差费"],
+        "dev_share": round(summary["偏差费占比"], 6),
+        "emerg_fee": summary["紧急购电费合计"],
+        "emerg_share": round(summary["紧急费占比"], 6),
+        "dp_sum": summary["δ+ 合计"],
+        "dm_sum": summary["δ− 合计"],
+        "curtail_kwh": summary["弃电量合计"],
+        "curtail_rate": round(summary["弃电率"], 6),
+        "soc_mean": summary["SOC 均值"],
+    }
+
+
+class AggregateCsv:
+    """消融网格 / 逐级阶梯聚合 CSV（ablation.csv、ladder.csv 同一格式）。"""
+
+    def __init__(self, filename: str, rows: list[dict]):
+        self.filename = filename
+        self.rows = rows
+
+    def export(self, out_dir: Path) -> Path:
+        """写出聚合 CSV 并返回路径。"""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / self.filename
+        pd.DataFrame(self.rows).to_csv(path, index=False,
+                                       float_format="%.4f")
+        return path
+
+
 class Result3Xlsx:
     """按官方模板行序填写 result3.xlsx（四表，行号对位不改标签）。"""
 
