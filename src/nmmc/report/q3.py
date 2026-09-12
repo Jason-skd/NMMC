@@ -43,8 +43,11 @@ def day_checks(day: DayResult, year: YearData) -> dict[str, float | int]:
     losses = (1 - ETA) * day.c.sum() + (1 / ETA - 1) * day.d.sum()
     c7 = abs((day.a + day.u - net - day.w).sum() - (d_soc + losses))
     tol = 1e-4
+    # C9 序关系（同题2 档 §7.1 推广）：Z^PI ≤ Z^ex-post ≤ min(Z^online,
+    # Z^CE)——事后最优对两臂内环策略都是可行下界
     bad_order = int(day.z_pi > day.z_expost + tol
-                    or day.z_expost > day.z + tol)
+                    or day.z_expost > day.z + tol
+                    or day.z_expost > day.z_ce + tol)
     return {
         "c3_7": float(np.abs(day.a[:36] - day.g[:36]).max()),
         "c6": float(abs(bat - d_soc)),
@@ -80,9 +83,12 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray
     err_l = np.concatenate([np.abs(d.ell_hat - year.ell[d.j]) for d in rep])
     err_r = np.concatenate([np.abs(d.r_hat - year.r[d.j]) for d in rep])
     z_online = float(sum(d.z for d in rep))
+    z_ce = float(sum(d.z_ce for d in rep))
     return {
         "天数": len(rep),
         "Z_online": z_online,
+        "Z_ce": z_ce,
+        "执行层增益": z_ce - z_online,
         "Z_expost": float(sum(d.z_expost for d in rep)),
         "Z_pi": float(sum(d.z_pi for d in rep)),
         "EVPI": z_online - float(sum(d.z_pi for d in rep)),
@@ -127,6 +133,8 @@ def metrics_row(label: str, epochs: tuple[int, ...], summary: dict
         "epochs": "-".join(str(6 * m) for m in epochs),
         "days": summary["天数"],
         "z_online": summary["Z_online"],
+        "z_ce": summary["Z_ce"],
+        "smpc_gain": summary["执行层增益"],
         "z_expost": summary["Z_expost"],
         "z_pi": summary["Z_pi"],
         "evpi": summary["EVPI"],
@@ -227,8 +235,8 @@ class DetailsCsv:
             dev = np.abs(day.a - day.g)
             rows.append({
                 "date": str(_py_date(day, year)),
-                "z_online": day.z, "z_expost": day.z_expost,
-                "z_pi": day.z_pi,
+                "z_online": day.z, "z_ce": day.z_ce,
+                "z_expost": day.z_expost, "z_pi": day.z_pi,
                 "g_sum": float(day.g.sum()), "a_sum": float(day.a.sum()),
                 "base_fee": float(p @ day.a),
                 "dev_fee": 0.5 * float(p @ dev),
@@ -262,6 +270,8 @@ class SummaryMd:
         money = lambda x: f"{x:,.2f} 元"
         core = md_table(["指标", "数值"], [
             ("Z^online（交付）", money(s["Z_online"])),
+            ("Z^CE（确定性等价对照，α^rt=0.65）", money(s["Z_ce"])),
+            ("执行层增益 Z^CE−Z^online", money(s["执行层增益"])),
             ("Z^ex-post", money(s["Z_expost"])),
             ("Z^PI", money(s["Z_pi"])),
             ("EVPI", money(s["EVPI"])),
@@ -331,6 +341,10 @@ class SummaryMd:
 ## 计算口径
 
 - Z = Σ[p·a + ½p|a−g|] + κΣp·u（现金费用，真实路径 u）；Z̃ 含末端估值，不上报。
+- Z^CE 与 Z^online 同 g、同 committed、同日初 SOC，只差内环未来表示
+  （当前阶段情景分布 vs 单条 α^rt=0.65 分位路径）——执行层增益即
+  "分位压缩把概率压成必然"的代价（题 2 结论在题 3 的同款计量，文档 §12.3）。
+  SOC 链按交付臂推进，CE 臂不入跨日反馈。
 - 计划表全天购电费为名义计划费 Σp·g；调整表为实际结算购电费（含偏差费、
   不含紧急费）——两列口径不同，分别声明（文档 §9.2）。
 - 调整购电量表 B_0 段（0:00–6:00）填计划值（无修订机会，最终量即计划量）。

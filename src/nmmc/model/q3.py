@@ -1,13 +1,19 @@
-"""题3 规划层与 MPC 尾部 LP（稀疏 HiGHS）。
+"""题3 规划层与内环步进 LP（稀疏 HiGHS）。
 
-两个入口共用题2 档 §5 的物理模板（nmmc.model.q2 的布局约定，g → a）：
+三个入口共用题2 档 §5 的物理模板（nmmc.model.q2 的布局约定，g → a）：
     solve_stage  阶段 m 两阶段场景 LP（文档 §7.1）——本块承诺 a(B_m)
                  （m=0 为全天计划 g）是 here-and-now 共享变量，更晚块的
                  试探 a^(s) 是 wait-and-see（偏差费计入期望，正确预期
                  "届时会重定"）；δ± 自动互斥（性质 5），纯 LP。
-    solve_tail   MPC 剩余时域 LP（文档 §8）——已锁定段注入为参数，
-                 未锁定段 a 为内部变量并按偏差费计（与 solve_stage 的
-                 wait-and-see 同一记账）。
+    solve_step   内环在线随机 MPC 的单步两阶段 LP（文档 §8，交付）——
+                 当步 (c,d,u,w,S_{t+1}) here-and-now 全情景共享，剩余
+                 时域按情景分支；分支内供给分层：锁定段注入移右端
+                 （费用沉没）、未锁定段 a^(s) 按偏差费 wait-and-see
+                 （题2 档 §7.2 solve_stochastic_step 同款 + 分层）。
+    solve_tail   确定性等价 MPC 的剩余时域 LP（CE 对照臂，α^rt=0.65
+                 分位参考路径）——已锁定段注入为参数，未锁定段 a 为
+                 内部变量并按偏差费计（与 solve_stage 的 wait-and-see
+                 同一记账）。
 
 变量布局（题2 档约定）：每情景块 [c(T'), d(T'), u(T'), w(T'), S(T'+1)]；
 偏差量 δ+/δ− 仅对可调整时段存在。S 初值由 bounds 钉在锚点。
@@ -19,8 +25,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.model.lp import (E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp,
+from nmmc.model.lp import (E_MAX_PER, ETA, S_MAX, S_MIN, T, solve_eq_lp,
                            soc_recursion)
+from nmmc.model.q2 import StepResult
 
 BETA_MINUS = 0.5        # 违约倍率 β⁻（计划高于调整的部分，文档 §2.3）
 BETA_PLUS = 1.5         # 加价倍率 β⁺（调整高于计划的部分）
@@ -197,17 +204,158 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
                        z_tilde=float(obj @ x))
 
 
+def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
+               free_mask: np.ndarray, g: np.ndarray, scn: np.ndarray,
+               probs: np.ndarray, t: int, s_prev: float, nu_end: float,
+               kappa: float) -> StepResult:
+    """解内环在线随机 MPC 的单步两阶段 LP（文档 §8，交付）。
+
+    第一阶段（here-and-now）：当步 (c,d,u,w) 与 S_{t+1} 全情景共享，
+    平衡用真值 n_t、注入恒为锁定参数移右端（内环无权改 a）——非预期性
+    的紧凑写法；第二阶段（wait-and-see）：剩余 m = T−1−t 段每情景一块，
+    供给分层——已锁定段注入移平衡右端（费用已沉没）、未锁定段 a^(s) 为
+    变量并按偏差费计（与 solve_stage 的 wait-and-see 同一记账）。目标
+    κp_t·u_t + Σ_s π_s[Σ_free(p·a^(s) + ½p·δ^(s)) + κΣ_{τ>t}p_τ·u^s_τ
+    − ν·S^s_end]。m = 0（末时段）无未来分支，−ν·S_{t+1} 显式入目标
+    （继承题2 档 C15：否则求解器对"放电后弃掉"无差异，末段白弃电）。
+
+    Args:
+        p: 逐时段电价，元/kWh，shape (144,)。
+        net: 当日真实净负荷，kWh，shape (144,)。
+        committed: 各时段已承诺注入（free_mask 为 True 处取值被忽略）。
+        free_mask: 未锁定时段掩码，shape (144,)。
+        g: 0:00 计划购电量（未锁定段的偏差基准）。
+        scn: 当前阶段净负荷场景 n^(s)，kWh，shape (N_s, 144)。
+        probs: 情景概率 π_s。
+        t: 当前时段（0 基）。
+        s_prev: 真实储电量 S_t（时段初）。
+        nu_end: 时域末端储电量估值 ν^end。
+        kappa: 紧急购电倍率 κ。
+
+    Returns:
+        StepResult: 当步决策与步进目标值。S_{t+1} 由执行层按真实递推
+        重建，不经求解器往返。
+
+    Raises:
+        RuntimeError: LP 不可行或未达最优（恒可行性继承题2 档 §7.5，
+        出现即为实现错误）。
+    """
+    m = T - 1 - t
+    # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（继承题2 档 C15）
+    # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t − ν·S_{t+1}
+    if m == 0:
+        obj = np.array([0.0, 0.0, kappa * p[t], 0.0, -nu_end])
+        # 平衡 d+u−c−w = n_t−a_t（a_t 恒锁定，移右端）与
+        # SOC 递推 S_{t+1}−ηc+d/η = S_t
+        rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
+        cols = [np.array([1, 2, 3, 0]), np.array([4, 0, 1])]
+        vals = [np.array([1.0, 1.0, -1.0, -1.0]),
+                np.array([1.0, -ETA, 1.0 / ETA])]
+        b = np.array([net[t] - committed[t], s_prev])
+        # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S_MIN ≤ S_{t+1} ≤ S_MAX
+        lo = np.array([0.0, 0.0, 0.0, 0.0, S_MIN])
+        hi = np.array([E_MAX_PER, E_MAX_PER, np.inf, np.inf, S_MAX])
+        x, _, z = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
+        return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
+                          w=float(x[3]), obj=z)
+
+    # 剩余时域供给分层：自由段（内部变量 af^(s)，相对位置 ff）与锁定段
+    n_s = len(scn)
+    fut = np.arange(t + 1, T)
+    ff = np.flatnonzero(free_mask[fut])
+    n_ff = len(ff)
+    n_blk = 3 * n_ff + 5 * m + 1
+    n = 5 + n_s * n_blk
+
+    # 变量布局：x = [c, d, u, w, S_{t+1}]（here-and-now 共享）
+    #          + N_s 个未来块 [af^s, δ+^s, δ−^s, c^s, d^s, u^s, w^s,
+    #            S^s(m+1)]（wait-and-see，S^s[0] 锚定共享 S_{t+1}）
+    obj = np.zeros(n)
+    obj[2] = kappa * p[t]                    # 当步紧急购电（a_t 已锁定，沉没）
+    lo = np.zeros(n)
+    hi = np.full(n, np.inf)
+    hi[0] = hi[1] = E_MAX_PER                # 当步 c / d 功率上限
+    lo[4] = S_MIN                            # 共享 S_{t+1}
+    hi[4] = S_MAX
+    # 当步平衡 d+u−c−w = n_t−a_t 与 SOC 递推 S_{t+1}−ηc+d/η = S_t
+    rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
+    cols = [np.array([1, 2, 3, 0]), np.array([4, 0, 1])]
+    vals = [np.array([1.0, 1.0, -1.0, -1.0]),
+            np.array([1.0, -ETA, 1.0 / ETA])]
+    b = [net[t] - committed[t], s_prev]
+    tt = np.arange(m)
+    row = 2
+    for s in range(n_s):
+        o_af = 5 + s * n_blk
+        o_dpf = o_af + n_ff
+        o_dmf = o_dpf + n_ff
+        o_c = o_dmf + n_ff
+        o_d, o_u = o_c + m, o_c + 2 * m
+        o_w, o_st = o_c + 3 * m, o_c + 4 * m
+        pi = float(probs[s])
+        # 情景目标：π_s[Σ_free p·(af + ½δ) + κΣ p·u^s − ν·S^s_end]；
+        # 变量域同题2 模板：0 ≤ c^s,d^s ≤ E_MAX_PER；S^s ∈ [S_MIN, S_MAX]
+        obj[o_af:o_af + n_ff] = pi * p[fut[ff]]
+        obj[o_dpf:o_dpf + n_ff] = pi * 0.5 * p[fut[ff]]
+        obj[o_dmf:o_dmf + n_ff] = pi * 0.5 * p[fut[ff]]
+        obj[o_u:o_u + m] = pi * kappa * p[t + 1:]
+        obj[o_st + m] = -pi * nu_end
+        hi[o_c:o_c + m] = E_MAX_PER
+        hi[o_d:o_d + m] = E_MAX_PER
+        lo[o_st:o_st + m + 1] = S_MIN
+        hi[o_st:o_st + m + 1] = S_MAX
+        # 情景块锚定：S^s[0] = S_{t+1}
+        rows.append(np.array([row, row]))
+        cols.append(np.array([o_st, 4]))
+        vals.append(np.array([1.0, -1.0]))
+        b.append(0.0)
+        row += 1
+        # 剩余时域平衡：d^s + u^s − c^s − w^s = n̂^s − a（锁定段 a =
+        # committed 移右端，自由段 af^s 进平衡式）
+        r = row + tt
+        rows += [r, r, r, r]
+        cols += [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
+        vals += [-np.ones(m), np.ones(m), np.ones(m), -np.ones(m)]
+        rhs = np.where(free_mask[fut], scn[s, fut],
+                       scn[s, fut] - committed[fut])
+        b.extend(rhs.tolist())
+        if n_ff:
+            rows.append(r[ff])
+            cols.append(o_af + np.arange(n_ff))
+            vals.append(np.ones(n_ff))
+        row += m
+        # SOC 递推：S^s_{τ+1} − S^s_τ − ηc^s + d^s/η = 0
+        soc_rows, soc_cols, soc_vals = soc_recursion(m, row, o_st, o_c, o_d)
+        rows += soc_rows
+        cols += soc_cols
+        vals += soc_vals
+        b.extend([0.0] * m)
+        row += m
+        # 自由段单次比对偏差：af^s − δ+^s + δ−^s = g（与规划层同记账）
+        if n_ff:
+            rf = row + np.arange(n_ff)
+            rows += [rf, rf, rf]
+            cols += [o_af + np.arange(n_ff), o_dpf + np.arange(n_ff),
+                     o_dmf + np.arange(n_ff)]
+            vals += [np.ones(n_ff), -np.ones(n_ff), np.ones(n_ff)]
+            b.extend(g[fut[ff]].tolist())
+            row += n_ff
+    x, _, z = solve_eq_lp(obj, rows, cols, vals, np.asarray(b), lo, hi)
+    return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
+                      w=float(x[3]), obj=z)
+
+
 def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                free_mask: np.ndarray, g: np.ndarray, s_start: float,
                nu_end: float, kappa: float) -> tuple[np.ndarray, ...]:
-    """解 MPC 剩余时域 LP（文档 §8 供给分层）。
+    """解确定性等价 MPC 的剩余时域 LP（CE 对照臂，文档 §12.3 执行层增益）。
 
     已锁定段注入为参数（移平衡式右端）；未锁定段 a 为变量，按
     p·a + ½p|a−g| 计费（与规划层 wait-and-see 同一记账）。
 
     Args:
         p: 电价，与 net 等长的尾部切片。
-        net: 净负荷路径（首时段真值 + 参考路径）。
+        net: 净负荷路径（首时段真值 + α^rt 分位参考路径）。
         committed: 各时段注入参数（free_mask 为 True 处取值被忽略）。
         free_mask: 未锁定时段掩码，与 net 等长。
         g: 计划购电量切片（未锁定段的偏差基准）。

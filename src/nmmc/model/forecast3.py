@@ -55,27 +55,23 @@ def hour_powers(r: np.ndarray) -> np.ndarray:
     return r[:, HOUR_SLOTS] / DELTA
 
 
-def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
-                   min_days: int = 8) -> np.ndarray | None:
-    """滚动估计反方差融合权重 φ(h)，h = 1..24（文档 §4.1）。
+def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
+                  min_days: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    """两预报器逐提前期误差标准差（kW，文档 §4.1 的诊断量）。
 
-    两个预报器在第 j 日之前的全部历史误差按提前期分列标准差
-    （官方误差 = 实际整点功率 − 附件3；持续法误差 = 实际 − 该日自己的
-    近 7 日均值），φ = σ_pe²/(σ_pe² + σ_fc²) 为官方预报的权重。
+    官方误差 = 实际整点功率 − 附件3；持续法误差 = 实际 − 该日自己的
+    近 7 日均值。目标整点按 vintage τ_m + h 对齐，同一提前期 h 的
+    样本跨 4 个 vintage 池化。
 
     Args:
         r_hour: 全年整点功率，shape (365, 24)。
         phi: 官方预报，shape (365, 4, 24)。
         j: 0 基日索引（只用 i < j）。
-        min_days: 历史不足该天数时返回 None（冷启动退化为官方直用）。
+        min_days: 池内样本不足该天数时该提前期记 NaN。
 
     Returns:
-        φ(h)，shape (24,)；历史不足时 None。
+        (σ_官方, σ_持续)，各 shape (24,)，kW；样本不足处 NaN。
     """
-    # 冷启动：历史不足 min_days 天，返回 None（退化为官方直用）
-    if j < min_days:
-        return None
-
     # 持续法预报：近 7 日同时段均值（day 0 占位，误差层屏蔽）
     pers = np.empty((j, 24))
     pers[0] = r_hour[0]                      # 占位，day 0 无持续法，误差层屏蔽
@@ -95,16 +91,45 @@ def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
     has_day = np.arange(j)[:, None, None] >= 1
     mask = valid[None] & has_day
 
-    # 反方差权重：φ(h) = σ_pe²/(σ_pe² + σ_fc²)（样本不足的提前期官方直用 φ=1）
-    weights = np.ones(24)
+    sig_fc = np.full(24, np.nan)
+    sig_pe = np.full(24, np.nan)
     for lead in range(24):
         m_ = mask[:, :, lead]
         if m_.sum() < min_days:
-            continue                                   # 样本不足：官方直用
-        v_fc = err_fc[:, :, lead][m_].var()
-        v_pe = err_pe[:, :, lead][m_].var()
-        weights[lead] = v_pe / (v_pe + v_fc) if v_pe + v_fc > 1e-9 else 1.0
-    return weights
+            continue                                   # 样本不足：记 NaN
+        sig_fc[lead] = np.sqrt(err_fc[:, :, lead][m_].var())
+        sig_pe[lead] = np.sqrt(err_pe[:, :, lead][m_].var())
+    return sig_fc, sig_pe
+
+
+def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
+                   min_days: int = 8) -> np.ndarray | None:
+    """滚动估计反方差融合权重 φ(h)，h = 1..24（文档 §4.1）。
+
+    φ = σ_pe²/(σ_pe² + σ_fc²) 为官方预报的权重（σ 取自
+    fusion_sigmas；样本不足的提前期官方直用 φ=1）。
+
+    Args:
+        r_hour: 全年整点功率，shape (365, 24)。
+        phi: 官方预报，shape (365, 4, 24)。
+        j: 0 基日索引（只用 i < j）。
+        min_days: 历史不足该天数时返回 None（冷启动退化为官方直用）。
+
+    Returns:
+        φ(h)，shape (24,)；历史不足时 None。
+    """
+    # 冷启动：历史不足 min_days 天，返回 None（退化为官方直用）
+    if j < min_days:
+        return None
+
+    # 反方差权重：φ = σ_pe²/(σ_pe² + σ_fc²)（NaN 提前期官方直用 φ=1）
+    sig_fc, sig_pe = fusion_sigmas(r_hour, phi, j, min_days)
+    var_fc, var_pe = sig_fc**2, sig_pe**2
+    den = var_pe + var_fc
+    out = np.ones(24)
+    ok = ~np.isnan(den) & (den > 1e-9)
+    out[ok] = var_pe[ok] / den[ok]
+    return out
 
 
 def pv_point(cfg: Q3Config, year: YearData, fc: YearForecast, j: int, m: int,

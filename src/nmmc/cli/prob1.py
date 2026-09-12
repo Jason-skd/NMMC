@@ -12,7 +12,8 @@ from nmmc.data import ATTACH
 from nmmc.data.day import load_day1
 from nmmc.model.lp import T
 from nmmc.model.q1 import Solution
-from nmmc.report.plot import DataOverview, DualEconomics, S0Basin, SchedulePlot
+from nmmc.report.plot.q1 import (DataOverview, DualEconomics, S0Basin,
+                                 SchedulePlot)
 from nmmc.report.q1 import (TEMPLATE, DetailsCsv, Exporter, Result1Xlsx,
                             SummaryMd, diagnostics, table1_rows, table2_rows)
 from nmmc.run.q1 import run_q1
