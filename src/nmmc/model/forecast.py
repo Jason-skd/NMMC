@@ -56,14 +56,16 @@ class ForecastConfig:
 
 
 def forecast_load(cfg: ForecastConfig, year: YearData, j: int,
-                  typ: np.ndarray) -> np.ndarray:
-    """第 j 日（0 基）负载点预报，只用前 j 日历史与日历。
+                  typ: np.ndarray, hist_end: int | None = None) -> np.ndarray:
+    """第 j 日（0 基）负载点预报，只用前 hist_end 日历史与日历。
 
     Args:
         cfg: 预报层配置。
-        year: 全年数据（本函数只切片 [:j]）。
-        j: 0 基日索引。
+        year: 全年数据（本函数只切片 [:hist_end]）。
+        j: 0 基日索引（预报目标）。
         typ: 附件1 典型日负载曲线，无历史时的先验。
+        hist_end: 历史截止（不含）；缺省 None 表示截至前 j 日（= j）。
+            预报 j+1 而信息只到 j−1 时传 hist_end=j（ν 锚实验 V2b 用）。
 
     Returns:
         点预报 ℓ̂，shape (144,)。
@@ -71,7 +73,8 @@ def forecast_load(cfg: ForecastConfig, year: YearData, j: int,
     Raises:
         ValueError: 候选编号不在 {L1, L2, L3}。
     """
-    hist = year.ell[:j]
+    he = j if hist_end is None else hist_end
+    hist = year.ell[:he]
 
     # 无样本（day 0）：退化为附件 1 典型日先验
     if len(hist) == 0:
@@ -79,12 +82,12 @@ def forecast_load(cfg: ForecastConfig, year: YearData, j: int,
 
     # L1：ℓ̂ = 近 W_L 个同星期几日的同点均值
     if cfg.load == "L1":
-        idx = np.flatnonzero(year.dow[:j] == year.dow[j])[-cfg.load_lags:]
+        idx = np.flatnonzero(year.dow[:he] == year.dow[j])[-cfg.load_lags:]
         return hist[idx].mean(axis=0) if len(idx) else hist.mean(axis=0)
 
     # L2：同星期几 EWMA——权重 w = 0.5^(steps/H_L)，steps = 距今同星期几步数
     if cfg.load == "L2":
-        idx = np.flatnonzero(year.dow[:j] == year.dow[j])
+        idx = np.flatnonzero(year.dow[:he] == year.dow[j])
         if len(idx) == 0:
             return hist.mean(axis=0)
         steps = np.arange(len(idx) - 1, -1, -1, dtype=float)  # 距今同星期几步数
@@ -93,7 +96,7 @@ def forecast_load(cfg: ForecastConfig, year: YearData, j: int,
 
     # L3：对数线性回归总量 × 近窗归一化形态
     if cfg.load == "L3":
-        return _load_regression(cfg, hist, year.dow[:j], year.doy[:j],
+        return _load_regression(cfg, hist, year.dow[:he], year.doy[:he],
                                 year.dow[j], year.doy[j])
     raise ValueError(f"未知负载候选: {cfg.load}")
 
@@ -152,14 +155,16 @@ def _dow_harm_design(dow, doy, nh: int) -> np.ndarray:
 
 
 def forecast_pv(cfg: ForecastConfig, year: YearData, j: int,
-                typ: np.ndarray) -> np.ndarray:
-    """第 j 日（0 基）光伏点预报，只用前 j 日历史与日历。
+                typ: np.ndarray, hist_end: int | None = None) -> np.ndarray:
+    """第 j 日（0 基）光伏点预报，只用前 hist_end 日历史与日历。
 
     Args:
         cfg: 预报层配置。
-        year: 全年数据（本函数只切片 [:j]）。
-        j: 0 基日索引。
+        year: 全年数据（本函数只切片 [:hist_end]）。
+        j: 0 基日索引（预报目标）。
         typ: 附件1 典型日光伏曲线，无历史时的先验。
+        hist_end: 历史截止（不含）；缺省 None 表示截至前 j 日（= j）。
+            预报 j+1 而信息只到 j−1 时传 hist_end=j（ν 锚实验 V2b 用）。
 
     Returns:
         点预报 r̂，shape (144,)。
@@ -167,7 +172,8 @@ def forecast_pv(cfg: ForecastConfig, year: YearData, j: int,
     Raises:
         ValueError: 候选编号不在 {P1, P2, P3}。
     """
-    hist = year.r[:j]
+    he = j if hist_end is None else hist_end
+    hist = year.r[:he]
 
     # 无样本（day 0）：退化为附件 1 典型日先验
     if len(hist) == 0:
@@ -187,7 +193,7 @@ def forecast_pv(cfg: ForecastConfig, year: YearData, j: int,
 
     # P3：日总量一阶年谐波 × 近窗归一化形态
     if cfg.pv == "P3":
-        return _pv_harmonic(cfg, hist, year.doy[:j], year.doy[j])
+        return _pv_harmonic(cfg, hist, year.doy[:he], year.doy[j])
     raise ValueError(f"未知光伏候选: {cfg.pv}")
 
 

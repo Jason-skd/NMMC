@@ -166,7 +166,8 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
         p: 逐时段电价（附件1，全年相同）。
         typ_ell / typ_r: 附件1 典型日曲线（暖机先验）。
         cfg: 预报层配置。
-        nu_end / kappa: 末端估值 / 紧急倍率。
+        nu_end: 末端估值——常数（缺省锚）或逐日数组（按日索引 j 取值，
+            ν 锚实验 V2b 换装用）；kappa: 紧急倍率。
         alpha_rt: 确定性等价对照的参考路径分位（文档 §7.3）。
         policy: 交付执行层，"smpc" 在线随机 MPC（§7.2）/"mpc" 确定性
             等价（§7.3，消融口径）。无论交付为何，另一档执行层始终在
@@ -186,24 +187,27 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
     soc = S0_INIT
     out: list[DayResult] = []
     for j in range(days or len(year.dates)):
+        # 逐日末端估值（V2b 换装）：数组按日取值，常数原样透传
+        nu_j = (float(nu_end[j])
+                if isinstance(nu_end, (np.ndarray, list, tuple)) else nu_end)
         ell_hat = forecast_load(cfg, year, j, typ_ell)
         r_hat = forecast_pv(cfg, year, j, typ_r)
         scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
         probs = np.full(len(scn), 1.0 / len(scn))
-        plan = solve_planning(p, scn, probs, soc, nu_end, kappa)
+        plan = solve_planning(p, scn, probs, soc, nu_j, kappa)
         ref = reference_path(scn, alpha_rt)
         net = year.ell[j] - year.r[j]
         if policy == "smpc":
             c, d, u, w, s = run_smpc_day(p, net, plan.g, scn, probs, soc,
-                                         nu_end, kappa)
-            ce_u = run_mpc_day(p, net, plan.g, soc, ref, nu_end, kappa)[2]
+                                         nu_j, kappa)
+            ce_u = run_mpc_day(p, net, plan.g, soc, ref, nu_j, kappa)[2]
         else:
-            c, d, u, w, s = run_mpc_day(p, net, plan.g, soc, ref, nu_end,
+            c, d, u, w, s = run_mpc_day(p, net, plan.g, soc, ref, nu_j,
                                         kappa)
             ce_u = u
-        expost = solve_recourse(p, net, plan.g, soc, nu_end, kappa)
-        pi = solve_planning(p, net[None, :], np.ones(1), soc, nu_end, kappa)
-        pi_u = solve_recourse(p, net, pi.g, soc, nu_end, kappa).u
+        expost = solve_recourse(p, net, plan.g, soc, nu_j, kappa)
+        pi = solve_planning(p, net[None, :], np.ones(1), soc, nu_j, kappa)
+        pi_u = solve_recourse(p, net, pi.g, soc, nu_j, kappa).u
         out.append(DayResult(
             j=j, g=plan.g, ell_hat=ell_hat, r_hat=r_hat, ns=len(scn),
             c=c, d=d, u=u, w=w, S=s, z=cash_cost(p, plan.g, u, kappa),

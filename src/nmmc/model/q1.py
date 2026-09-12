@@ -37,6 +37,8 @@ class Solution:
         lam: 平衡约束对偶 λ_t（母线边际价值），元/kWh；不可得时为 None。
         nu: 储能边际价值 ν_t（原始对偶取负的正号约定，见文档 §7），元/kWh；
             不可得时为 None。
+        nu_cycle: 昼夜循环约束对偶（多留 1 kWh 到日末的边际价值，题2/题3
+            的常数锚 0.472 即典型日该值）；不可得时为 None。
     """
 
     g: np.ndarray
@@ -47,6 +49,7 @@ class Solution:
     cost: float
     lam: np.ndarray | None = None
     nu: np.ndarray | None = None
+    nu_cycle: float | None = None
 
 
 def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
@@ -123,4 +126,5 @@ def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
         w=x[NW:NW + T], S=x[NS:], cost=cost,
         lam=duals[:T].copy(),
         nu=-duals[T:2 * T],
+        nu_cycle=float(duals[2 * T]),
     )
