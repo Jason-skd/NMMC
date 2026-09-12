@@ -15,6 +15,8 @@ from nmmc.data.day import load_day1
 from nmmc.data.year import DAYS, load_year
 from nmmc.model.forecast import ForecastConfig
 from nmmc.model.q2 import KAPPA, NU_END
+from nmmc.report.plot.q2 import (DailyCost, DispatchHeatmap, ForecastQuality,
+                                 SocEnvelope)
 from nmmc.report.q2 import (TEMPLATE, DetailsCsv, Result2Xlsx, SummaryMd,
                             WARMUP_DAYS, summarize)
 from nmmc.run.q2 import ALPHA_RT, rollout
@@ -102,10 +104,16 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  {key}: {'过' if summary[key] else '不过'}")
 
     out_dir = args.output_dir / label
-    for path in (Result2Xlsx(args.template).export(days, year, out_dir),
-                 DetailsCsv().export(days, year, day1.p, out_dir),
-                 SummaryMd(label, summary).export(days, year, day1.p,
-                                                  out_dir)):
+    exports = (
+        Result2Xlsx(args.template).export(days, year, out_dir),
+        DetailsCsv().export(days, year, day1.p, out_dir),
+        SummaryMd(label, summary).export(days, year, day1.p, out_dir),
+        ForecastQuality().export(days, year, day1.p, out_dir),
+        DailyCost().export(days, year, day1.p, out_dir),
+        SocEnvelope().export(days, year, day1.p, out_dir),
+        DispatchHeatmap().export(days, year, day1.p, out_dir),
+    )
+    for path in exports:
         print(f"已导出 {path}")
 
 
