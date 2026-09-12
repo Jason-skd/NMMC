@@ -55,8 +55,8 @@ def hour_powers(r: np.ndarray) -> np.ndarray:
     return r[:, HOUR_SLOTS] / DELTA
 
 
-def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
-                  min_days: int = 8) -> tuple[np.ndarray, np.ndarray]:
+def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray,
+                  j: int) -> tuple[np.ndarray, np.ndarray]:
     """两预报器逐提前期误差标准差（kW，文档 §4.1 的诊断量）。
 
     官方误差 = 实际整点功率 − 附件3；持续法误差 = 实际 − 该日自己的
@@ -67,14 +67,15 @@ def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
         r_hour: 全年整点功率，shape (365, 24)。
         phi: 官方预报，shape (365, 4, 24)。
         j: 0 基日索引（只用 i < j）。
-        min_days: 池内样本不足该天数时该提前期记 NaN。
 
     Returns:
-        (σ_官方, σ_持续)，各 shape (24,)，kW；样本不足处 NaN。
+        (σ_官方, σ_持续)，各 shape (24,)，kW；自由度不足处 NaN
+        （自然规则：2 个样本才有方差可言，非可调阈值）。
     """
     # 持续法预报：近 7 日同时段均值（day 0 占位，误差层屏蔽）
     pers = np.empty((j, 24))
-    pers[0] = r_hour[0]                      # 占位，day 0 无持续法，误差层屏蔽
+    if j:
+        pers[0] = r_hour[0]                  # 占位，day 0 无持续法，误差层屏蔽
     for i in range(1, j):
         pers[i] = r_hour[max(0, i - 7):i].mean(axis=0)
 
@@ -95,35 +96,34 @@ def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
     sig_pe = np.full(24, np.nan)
     for lead in range(24):
         m_ = mask[:, :, lead]
-        if m_.sum() < min_days:
-            continue                                   # 样本不足：记 NaN
+        if m_.sum() < 2:
+            continue                # 自由度 ≥ 2：2 个样本才有方差可言
         sig_fc[lead] = np.sqrt(err_fc[:, :, lead][m_].var())
         sig_pe[lead] = np.sqrt(err_pe[:, :, lead][m_].var())
     return sig_fc, sig_pe
 
 
-def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
-                   min_days: int = 8) -> np.ndarray | None:
+def fusion_weights(r_hour: np.ndarray, phi: np.ndarray,
+                   j: int) -> np.ndarray:
     """滚动估计反方差融合权重 φ(h)，h = 1..24（文档 §4.1）。
 
     φ = σ_pe²/(σ_pe² + σ_fc²) 为官方预报的权重（σ 取自
-    fusion_sigmas；样本不足的提前期官方直用 φ=1）。
+    fusion_sigmas；自由度不足的提前期官方直用 φ=1）。无冷启动
+    阈值：j ∈ {0, 1} 无可用样本（day 0 无持续法），全提前期自动
+    φ = 1 退化为官方直用；自第 2 日起自由度 ≥ 2 的提前期先行
+    融合，权重噪声随样本累积自平均（方差估计无偏，少样本是
+    噪声不是偏差）。
 
     Args:
         r_hour: 全年整点功率，shape (365, 24)。
         phi: 官方预报，shape (365, 4, 24)。
         j: 0 基日索引（只用 i < j）。
-        min_days: 历史不足该天数时返回 None（冷启动退化为官方直用）。
 
     Returns:
-        φ(h)，shape (24,)；历史不足时 None。
+        φ(h)，shape (24,)。
     """
-    # 冷启动：历史不足 min_days 天，返回 None（退化为官方直用）
-    if j < min_days:
-        return None
-
     # 反方差权重：φ = σ_pe²/(σ_pe² + σ_fc²)（NaN 提前期官方直用 φ=1）
-    sig_fc, sig_pe = fusion_sigmas(r_hour, phi, j, min_days)
+    sig_fc, sig_pe = fusion_sigmas(r_hour, phi, j)
     var_fc, var_pe = sig_fc**2, sig_pe**2
     den = var_pe + var_fc
     out = np.ones(24)
@@ -133,7 +133,7 @@ def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
 
 
 def pv_point(cfg: Q3Config, year: YearData, fc: YearForecast, j: int, m: int,
-             typ_r: np.ndarray, weights: np.ndarray | None) -> np.ndarray:
+             typ_r: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """阶段 m 的光伏点预报（文档 §4.1）：官方预报 I1 左锚线性降尺度后
     与近 7 日持续法按 φ(h) 融合。已实现前缀填实际值（预报语义只在
     t ≥ 6τ_m）。
@@ -144,8 +144,9 @@ def pv_point(cfg: Q3Config, year: YearData, fc: YearForecast, j: int, m: int,
         fc: 附件3 官方预报。
         j: 0 基日索引。
         m: 修订阶段 0..3。
-        typ_r: 附件1 典型日光伏曲线（冷启动持续法先验）。
-        weights: fusion_weights 的输出；None 或 PB0 表示官方直用。
+        typ_r: 附件1 典型日光伏曲线（无历史时持续法先验；j = 0 融合
+            权重恒为 1，先验实际不生效，仅为防御性兜底）。
+        weights: fusion_weights 的输出 φ(h)（PB0 时忽略）。
 
     Returns:
         点预报 r̂，shape (144,)，已实现前缀为实际值。
@@ -162,8 +163,8 @@ def pv_point(cfg: Q3Config, year: YearData, fc: YearForecast, j: int, m: int,
     theta = (np.arange(h0, T) + 1) * DELTA             # 各时段末点，小时
     off = np.interp(theta, node_t, node_v) * DELTA      # kWh
 
-    # PB0 / 冷启动：官方降尺度直用
-    if cfg.fusion == "PB0" or weights is None:
+    # PB0：官方降尺度直用
+    if cfg.fusion == "PB0":
         tail = off
     else:
         # F1 融合：r̂ = φ(h)·降尺度 + (1−φ(h))·持续法，提前期 h = ceil(θ−τ)
