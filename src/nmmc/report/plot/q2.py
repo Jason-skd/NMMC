@@ -8,8 +8,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import patheffects
-from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
@@ -18,7 +16,7 @@ from nmmc.model.lp import S_MAX, S_MIN, T
 from nmmc.report.plot.style import (C_CH, C_DIS, C_EMERG, C_LOAD, C_PV,
                                     C_PRICE, C_SOC, ENDS, GRID, INK, INK2,
                                     MUTED, SURFACE, day_axis, legend,
-                                    month_axis, save, style_ax)
+                                    month_axis, save, state_matrix, style_ax)
 from nmmc.report.q2 import WARMUP_DAYS, report_days
 from nmmc.run.q2 import DayResult
 
@@ -27,14 +25,24 @@ EPS = 1e-6  # 充/放/紧急的活跃判定阈值，kWh
 
 class ForecastQuality:
     """预报质量四联图：预报 vs 实际散点 + 逐时残差箱线
-    （q2_forecast_quality.png）。预报层是题2 的建模贡献，此图为其证据。"""
+    （{prefix}_forecast_quality.png）。预报层是题2 的建模贡献，此图为其证据；
+    q3 复用同一实现（prefix="q3"），两问预报质量同构对照。
+
+    Attributes:
+        prefix: 文件名前缀（q2 / q3）。
+        subject: 图内标题主语（"问题 2" / "问题 3"）。
+    """
+
+    def __init__(self, prefix: str = "q2", subject: str = "问题 2"):
+        self.prefix = prefix
+        self.subject = subject
 
     def export(self, days: list[DayResult], year: YearData, p: np.ndarray,
                out_dir: Path) -> Path:
         """渲染预报质量图并返回 PNG 路径。
 
         Args:
-            days: 全部回测日（取报告期）。
+            days: 全部回测日（取报告期；q2/q3 的 DayResult 同名字段）。
             year: 全年数据（真值）。
             p: 逐时段电价（本图未使用，保持导出链签名）。
             out_dir: 输出目录。
@@ -88,10 +96,10 @@ class ForecastQuality:
             ax.set_xticklabels([str(h) for h in range(0, 24, 3)])
             ax.set_xlabel("时刻（h）", fontsize=9, color=INK2)
 
-        fig.suptitle(f"问题 2 预报层质量（报告期 {len(rep)} 天，"
+        fig.suptitle(f"{self.subject}预报层质量（报告期 {len(rep)} 天，"
                      "0:00 点预报 vs 实际）", fontsize=13, color=INK)
         fig.tight_layout(rect=(0, 0, 1, 0.94))
-        return save(fig, out_dir, "q2_forecast_quality.png")
+        return save(fig, out_dir, f"{self.prefix}_forecast_quality.png")
 
 
 class DailyCost:
@@ -209,24 +217,10 @@ class DispatchHeatmap:
         code[np.array([d.u for d in days]) > EPS] = 3
 
         fig, ax = plt.subplots(figsize=(9, 6.5), dpi=200, facecolor=SURFACE)
-        ax.imshow(code, aspect="auto", interpolation="nearest",
-                  cmap=ListedColormap([GRID, C_CH, C_DIS, C_EMERG]),
-                  vmin=0, vmax=3, extent=(0.0, 24.0, float(n), 0.0))
-        # 暖机/报告分区标注：紧贴分隔线上下、白描边保证在彩色像元上可读
-        stroke = [patheffects.withStroke(linewidth=2.5, foreground=SURFACE)]
-        ax.axhline(WARMUP_DAYS, color=INK2, lw=1)
-        ax.text(0.4, WARMUP_DAYS - 0.4, "暖机期", fontsize=8, color=INK2,
-                va="bottom", path_effects=stroke)
-        ax.text(0.4, WARMUP_DAYS + 0.6, "报告期", fontsize=8, color=INK2,
-                va="top", path_effects=stroke)
         style_ax(ax, "调度状态指纹（行 = 日，列 = 时段；紧急优先于充放标记）",
                  "月份")
-        ax.grid(False)
-
-        ax.set_xticks(np.arange(0, 25, 4))
-        ax.set_xlim(0, 24)
-        ax.set_xlabel("时刻（h）", fontsize=9, color=INK2)
-        month_axis(ax, year.dates[:n], n, on_y=True)
+        state_matrix(ax, code, year.dates[:n],
+                     [GRID, C_CH, C_DIS, C_EMERG], warmup=WARMUP_DAYS)
         handles = [Patch(facecolor=c, lw=0) for c in
                    (C_CH, C_DIS, GRID, C_EMERG)]
         labels_ = ["充电", "放电", "闲置（中性底）", "紧急购电"]
