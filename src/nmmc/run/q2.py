@@ -9,7 +9,7 @@ MPC——逐时段以真实 SOC 重锚、当步用真值净负荷、剩余时域
 事后最优与完美信息为两个诊断下界（§7.4/§7.5）。全年滚动按 §9
 诚实回测协议：跨日唯一反馈是真实路径 S_144 与当日实际值。
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -158,6 +158,7 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
             typ_r: np.ndarray, cfg: ForecastConfig, nu_end: float = NU_END,
             kappa: float = KAPPA, alpha_rt: float = ALPHA_RT,
             policy: str = "smpc",
+            win_schedule: tuple[np.ndarray, np.ndarray] | None = None,
             days: int | None = None) -> list[DayResult]:
     """全年诚实回测（文档 §9）：预报 → SAA 规划 → 执行层 → SOC 链推进。
 
@@ -172,6 +173,9 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
         policy: 交付执行层，"smpc" 在线随机 MPC（§7.2）/"mpc" 确定性
             等价（§7.3，消融口径）。无论交付为何，另一档执行层始终在
             同一 g、同日初 SOC 上加跑并记入 z / z_ce，保证机制归因干净。
+        win_schedule: 逐日选窗 (w_l, w_r) 数组对（去超参实验，issue #6），
+            第 j 日用 replace(cfg, load_lags=w_l[j], pv_window=w_r[j])；
+            None = 固定 cfg 常数窗（交付口径）。
         days: 只滚动前 N 天（含暖机）；缺省全年 365。
 
     Returns:
@@ -190,6 +194,10 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
         # 逐日末端估值（V2b 换装）：数组按日取值，常数原样透传
         nu_j = (float(nu_end[j])
                 if isinstance(nu_end, (np.ndarray, list, tuple)) else nu_end)
+        # 逐日选窗（去超参实验）：按日替换 W_L/W_R，其余配置不动
+        if win_schedule is not None:
+            cfg = replace(cfg, load_lags=int(win_schedule[0][j]),
+                          pv_window=int(win_schedule[1][j]))
         ell_hat = forecast_load(cfg, year, j, typ_ell)
         r_hat = forecast_pv(cfg, year, j, typ_r)
         scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)

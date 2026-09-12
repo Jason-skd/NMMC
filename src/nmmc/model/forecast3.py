@@ -56,11 +56,12 @@ def hour_powers(r: np.ndarray) -> np.ndarray:
 
 
 def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
-                  min_days: int = 8) -> tuple[np.ndarray, np.ndarray]:
+                  min_days: int = 8,
+                  window: int = 7) -> tuple[np.ndarray, np.ndarray]:
     """两预报器逐提前期误差标准差（kW，文档 §4.1 的诊断量）。
 
     官方误差 = 实际整点功率 − 附件3；持续法误差 = 实际 − 该日自己的
-    近 7 日均值。目标整点按 vintage τ_m + h 对齐，同一提前期 h 的
+    近 window 日均值。目标整点按 vintage τ_m + h 对齐，同一提前期 h 的
     样本跨 4 个 vintage 池化。
 
     Args:
@@ -68,15 +69,16 @@ def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
         phi: 官方预报，shape (365, 4, 24)。
         j: 0 基日索引（只用 i < j）。
         min_days: 池内样本不足该天数时该提前期记 NaN。
+        window: 持续法近窗（去超参实验逐日选窗时传入，缺省 7 = 交付）。
 
     Returns:
         (σ_官方, σ_持续)，各 shape (24,)，kW；样本不足处 NaN。
     """
-    # 持续法预报：近 7 日同时段均值（day 0 占位，误差层屏蔽）
+    # 持续法预报：近 window 日同时段均值（day 0 占位，误差层屏蔽）
     pers = np.empty((j, 24))
     pers[0] = r_hour[0]                      # 占位，day 0 无持续法，误差层屏蔽
     for i in range(1, j):
-        pers[i] = r_hour[max(0, i - 7):i].mean(axis=0)
+        pers[i] = r_hour[max(0, i - window):i].mean(axis=0)
 
     # 目标整点对齐：vintage τ_m + h → 附件 2 整点列
     tau = np.array(VINTAGE_HOURS)
@@ -103,7 +105,8 @@ def fusion_sigmas(r_hour: np.ndarray, phi: np.ndarray, j: int,
 
 
 def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
-                   min_days: int = 8) -> np.ndarray | None:
+                   min_days: int = 8,
+                   window: int = 7) -> np.ndarray | None:
     """滚动估计反方差融合权重 φ(h)，h = 1..24（文档 §4.1）。
 
     φ = σ_pe²/(σ_pe² + σ_fc²) 为官方预报的权重（σ 取自
@@ -114,6 +117,7 @@ def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
         phi: 官方预报，shape (365, 4, 24)。
         j: 0 基日索引（只用 i < j）。
         min_days: 历史不足该天数时返回 None（冷启动退化为官方直用）。
+        window: 持续法近窗（去超参实验逐日选窗时传入，缺省 7 = 交付）。
 
     Returns:
         φ(h)，shape (24,)；历史不足时 None。
@@ -123,7 +127,7 @@ def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
         return None
 
     # 反方差权重：φ = σ_pe²/(σ_pe² + σ_fc²)（NaN 提前期官方直用 φ=1）
-    sig_fc, sig_pe = fusion_sigmas(r_hour, phi, j, min_days)
+    sig_fc, sig_pe = fusion_sigmas(r_hour, phi, j, min_days, window)
     var_fc, var_pe = sig_fc**2, sig_pe**2
     den = var_pe + var_fc
     out = np.ones(24)
