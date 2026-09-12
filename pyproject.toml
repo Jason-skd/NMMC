@@ -16,6 +16,8 @@ prob1 = "nmmc.cli.prob1:main"
 prob2 = "nmmc.cli.prob2:main"
 prob3 = "nmmc.cli.prob3:main"
 prob4 = "nmmc.cli.prob4:main"
+expnu = "nmmc.cli.exp_nu:main"
+expwin = "nmmc.cli.exp_win:main"
 
 [build-system]
 requires = ["hatchling"]
