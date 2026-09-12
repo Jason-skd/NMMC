@@ -56,9 +56,12 @@ def solve_eq_lp(obj: np.ndarray, rows: list, cols: list, vals: list,
     Raises:
         RuntimeError: LP 不可行或未达最优。
     """
+    # 组装稀疏等式约束矩阵：COO 三元组拼接 → CSR
     a = coo_matrix(
         (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
         shape=(len(b), len(obj))).tocsr()
+
+    # HiGHS 求解；对偶取等式约束 marginals（影子价格）
     res = linprog(obj, A_eq=a, b_eq=b,
                   bounds=np.column_stack([lo, hi]), method="highs")
     if not res.success:

@@ -88,19 +88,26 @@ def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
     cols += [[NS + T, NS]]
     vals += [[1.0, -1.0]]
 
+    # 等式右端：b = [ell - r, 0(SOC), 0(循环)]
     b = np.concatenate([ell - r, np.zeros(2 * T)])
 
+    # 目标：min Z = Σ_t p_t·g_t（全天购电费）
     obj = np.zeros(N)
     obj[NG:NG + T] = p
 
+    # 变量域：g ≥ 0；0 ≤ c, d ≤ E_MAX_PER；w ≥ 0；S_MIN ≤ S ≤ S_MAX
     lo = np.zeros(N)
     hi = np.full(N, np.inf)
     hi[NC:NC + T] = E_MAX_PER         # c
     hi[ND:ND + T] = E_MAX_PER         # d
     lo[NS:] = S_MIN
     hi[NS:] = S_MAX                   # S
+
+    # S_0 钉值：S_0 = S_144 = s0_fixed（经循环约束联动锁定）
     if s0_fixed is not None:
         lo[NS] = hi[NS] = s0_fixed
+
+    # 阈值规则基准：仅 p_t ≤ low 或光伏盈余（r_t > ell_t）许充；仅 p_t ≥ high 许放
     if rule_thresholds is not None:
         low, high = rule_thresholds
         for t_ in range(T):
@@ -109,6 +116,7 @@ def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
             if p[t_] < high:
                 hi[ND + t_] = 0.0     # 该时段禁止放电
 
+    # 解包与对偶映射：λ_t = 平衡影子价格；ν_t = −SOC 递推影子价格（文档 §7）
     x, duals, cost = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
     return Solution(
         g=x[NG:NG + T], c=x[NC:NC + T], d=x[ND:ND + T],

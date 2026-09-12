@@ -83,6 +83,10 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
     o_hn = 0
     o_dp = n_hn if m else 0                  # 共享 δ+/δ−（仅 m≥1）
     o_s = o_dp + (2 * n_hn if m else 0)      # 首情景块起点
+
+    # 变量布局：x = [hn(B_m)] (+ m≥1: [δ+(B_m), δ−(B_m)]) + N_s 个情景块
+    # [af, δ+f, δ−f, c, d, u, w, S(nh+1)]
+    # 目标：Z̃ = E_s[Σ p·a^(s) + ½p·(δ+ + δ−) + κp·u^(s)] − ν·E_s[S_end]
     obj = np.zeros(n)
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
@@ -167,7 +171,8 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         vals += soc_vals
         b += [0.0] * nh
         row += nh
-        # 物理边界与目标（紧急 + 末端估值）
+        # 情景物理边界与目标：π_s·κΣp·u^(s) − π_s·ν·S_end；
+        # 0 ≤ c,d ≤ E_MAX_PER；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_anchor
         obj[o_u:o_u + nh] = pi * kappa * p[h0:]
         obj[o_st + nh] = -pi * nu_end
         hi[o_c:o_c + nh] = E_MAX_PER
@@ -176,7 +181,10 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         hi[o_st:o_st + nh + 1] = S_MAX
         lo[o_st] = hi[o_st] = s_anchor
 
+    # 求解；Z̃ = obj @ x（期望口径，含末端估值，非现金费用）
     x, _, _ = solve_eq_lp(obj, rows, cols, vals, np.array(b), lo, hi)
+
+    # 解包：hn 段即本块承诺（m=0 为全天计划 g），af 段为逐情景试探
     commit = (committed.copy() if committed is not None
               else np.zeros(T))
     commit[h0:he] = x[o_hn:o_hn + n_hn]
@@ -220,9 +228,14 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     o_st = 4 * n_t
     o_af = o_st + n_t + 1
     n = o_af + 3 * n_f
+
+    # 变量布局：x = [c, d, u, w, S(n+1)] + 未锁定段 [af, δ+, δ−]
+    # 目标：min κΣp·u + Σ_free[p·af + ½p·(δ+ + δ−)] − ν·S_end
     obj = np.zeros(n)
     obj[o_u:o_u + n_t] = kappa * p
     obj[o_st + n_t] = -nu_end
+
+    # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_start
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
     hi[o_c:o_c + n_t] = E_MAX_PER
@@ -230,27 +243,32 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     lo[o_st:o_st + n_t + 1] = S_MIN
     hi[o_st:o_st + n_t + 1] = S_MAX
     lo[o_st] = hi[o_st] = s_start
+
+    # 平衡：d + u − c − w = n − a（已锁定段 a = committed 移右端，未锁定段 af 为变量）
     tt = np.arange(n_t)
     rows = [tt, tt, tt, tt]
     cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
     vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t)]
+
+    # SOC 递推：S_t − S_{t−1} − ηc + d/η = 0
     soc_rows, soc_cols, soc_vals = soc_recursion(n_t, n_t, o_st, o_c, o_d)
     rows += soc_rows
     cols += soc_cols
     vals += soc_vals
     b = list(np.where(free_mask, net, net - committed)) + [0.0] * n_t
     if n_f:
-        # 未锁定段：注入变量 af 进平衡式；偏差 af − δ+ + δ− = g（新行，
-        # 排在 SOC 递推之后）
+        # 未锁定段注入 af 进平衡式（列补挂到平衡行）
         rows.append(tt[free])
         cols.append(o_af + np.arange(n_f))
         vals.append(np.ones(n_f))
+        # 单次比对偏差：af − δ+ + δ− = g（新行，排在 SOC 递推之后）
         rf = 2 * n_t + np.arange(n_f)
         rows += [rf, rf, rf]
         cols += [o_af + np.arange(n_f), o_af + n_f + np.arange(n_f),
                  o_af + 2 * n_f + np.arange(n_f)]
         vals += [np.ones(n_f), -np.ones(n_f), np.ones(n_f)]
         b += list(g[free])
+        # 未锁定段计费：p·af + ½p·(δ+ + δ−)（与规划层 wait-and-see 同记账）
         obj[o_af:o_af + n_f] = p[free]
         obj[o_af + n_f:o_af + 2 * n_f] = 0.5 * p[free]
         obj[o_af + 2 * n_f:] = 0.5 * p[free]

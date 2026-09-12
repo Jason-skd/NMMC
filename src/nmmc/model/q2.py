@@ -77,8 +77,12 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
     n_s = len(scn)
     blk = 5 * T + 1
     n = T + n_s * blk
+
+    # 目标：Z̃ = Σp·g（计划费，不进情景平均）+ Σ_s π_s[κΣp·u^(s) − ν·S_144^(s)]
     obj = np.zeros(n)
     obj[:T] = p
+
+    # 变量域：g ≥ 0；情景块内 0 ≤ c,d ≤ E_MAX_PER、u,w ≥ 0、S ∈ [S_MIN, S_MAX]
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
     b = np.zeros(2 * T * n_s)
@@ -102,6 +106,7 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         rows += soc_rows
         cols += soc_cols
         vals += soc_vals
+        # 情景目标（π_s·κΣp·u − π_s·ν·S_144）与变量域（S_0 锚定 s0）
         pi = probs[s]
         obj[o_u:o_u + T] = pi * kappa * p
         obj[o_s + T] = -pi * nu_end
@@ -112,6 +117,8 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         lo[o_s:o_s + T + 1] = S_MIN
         hi[o_s:o_s + T + 1] = S_MAX
         lo[o_s] = hi[o_s] = s0
+
+    # 求解；Z̃ = obj @ x（含虚拟记账项，非现金费用）
     x, _, _ = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
     return PlanResult(g=x[:T], z_tilde=float(obj @ x))
 
@@ -141,9 +148,13 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     n_t = len(net)
     blk = 5 * n_t + 1
     o_c, o_d, o_u, o_w, o_s = 0, n_t, 2 * n_t, 3 * n_t, 4 * n_t
+
+    # 目标：min κΣp·u − ν·S_end（诊断口径，非现金费用）
     obj = np.zeros(blk)
     obj[o_u:o_u + n_t] = kappa * p
     obj[o_s + n_t] = -nu_end
+
+    # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_start
     lo = np.zeros(blk)
     hi = np.full(blk, np.inf)
     hi[o_c:o_c + n_t] = E_MAX_PER
@@ -151,10 +162,14 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     lo[o_s:o_s + n_t + 1] = S_MIN
     hi[o_s:o_s + n_t + 1] = S_MAX
     lo[o_s] = hi[o_s] = s_start
+
+    # 平衡：d + u − c − w = n − g（g 已锁定，移右端）
     tt = np.arange(n_t)
     rows = [tt, tt, tt, tt]
     cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
     vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t)]
+
+    # SOC 递推：S_t − S_{t−1} − ηc + d/η = 0
     soc_rows, soc_cols, soc_vals = soc_recursion(n_t, n_t, o_s, o_c, o_d)
     rows += soc_rows
     cols += soc_cols
@@ -220,18 +235,23 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     m = T - 1 - t
     if m == 0:
         # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（C15）
+        # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t − ν·S_{t+1}
         obj = np.array([0.0, 0.0, kappa * p[t], 0.0, -nu_end])
+        # 平衡 d+u−c−w = n_t−g_t 与 SOC 递推 S_{t+1}−ηc+d/η = S_t
         rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
         cols = [np.array([1, 2, 3, 0]), np.array([4, 0, 1])]
         vals = [np.array([1.0, 1.0, -1.0, -1.0]),
                 np.array([1.0, -ETA, 1.0 / ETA])]
         b = np.array([net[t] - g[t], s_prev])
+        # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S_MIN ≤ S_{t+1} ≤ S_MAX
         lo = np.array([0.0, 0.0, 0.0, 0.0, S_MIN])
         hi = np.array([E_MAX_PER, E_MAX_PER, np.inf, np.inf, S_MAX])
         x, _, z = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
         return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
                           w=float(x[3]), obj=z)
 
+    # 变量布局：x = [c, d, u, w, S_{t+1}]（here-and-now 共享）
+    #          + N_s 个未来块 [c^s, d^s, u^s, w^s, S^s(m+1)]（wait-and-see）
     n_s = len(scn)
     blk = 5 * m + 1
     n = 5 + n_s * blk
@@ -253,6 +273,7 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         o_c = 5 + s * blk
         o_d, o_u = o_c + m, o_c + 2 * m
         o_w, o_s = o_c + 3 * m, o_c + 4 * m
+        # 情景目标：π_s·κΣ_{τ>t}p·u^s − π_s·ν·S^s_end；变量域同题2 模板
         pi = float(probs[s])
         obj[o_u:o_u + m] = pi * kappa * p[t + 1:]
         obj[o_s + m] = -pi * nu_end
@@ -266,12 +287,13 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         cols.append(np.array([o_s, 4]))
         vals.append(np.array([1.0, -1.0]))
         b.append(0.0)
-        # 剩余时域平衡 g+d^s+u^s−c^s−w^s = n̂^s
+        # 剩余时域平衡：d^s + u^s − c^s − w^s = n̂^s − g（g 已锁定，移右端）
         r = r0 + 1 + tt
         rows += [r, r, r, r]
         cols += [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
         vals += [-np.ones(m), np.ones(m), np.ones(m), -np.ones(m)]
         b.extend((scn[s, t + 1:] - g[t + 1:]).tolist())
+        # SOC 递推：S^s_{τ+1} − S^s_τ − ηc^s + d^s/η = 0
         soc_rows, soc_cols, soc_vals = soc_recursion(
             m, r0 + 1 + m, o_s, o_c, o_d)
         rows += soc_rows

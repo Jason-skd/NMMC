@@ -72,21 +72,30 @@ def fusion_weights(r_hour: np.ndarray, phi: np.ndarray, j: int,
     Returns:
         φ(h)，shape (24,)；历史不足时 None。
     """
+    # 冷启动：历史不足 min_days 天，返回 None（退化为官方直用）
     if j < min_days:
         return None
+
+    # 持续法预报：近 7 日同时段均值（day 0 占位，误差层屏蔽）
     pers = np.empty((j, 24))
     pers[0] = r_hour[0]                      # 占位，day 0 无持续法，误差层屏蔽
     for i in range(1, j):
         pers[i] = r_hour[max(0, i - 7):i].mean(axis=0)
+
+    # 目标整点对齐：vintage τ_m + h → 附件 2 整点列
     tau = np.array(VINTAGE_HOURS)
     tgt = tau[:, None] + np.arange(1, 25)[None, :]     # (4, 24) 目标整点
     valid = tgt <= 24
     hidx = np.where(valid, tgt - 1, 0)
     r_tgt = r_hour[:j][:, hidx]                         # (j, 4, 24)
+
+    # 两预报器逐提前期误差：官方 err_fc = 实际 − 附件3；持续 err_pe = 实际 − 持续法
     err_fc = r_tgt - phi[:j]
     err_pe = r_tgt - pers[:, hidx]
     has_day = np.arange(j)[:, None, None] >= 1
     mask = valid[None] & has_day
+
+    # 反方差权重：φ(h) = σ_pe²/(σ_pe² + σ_fc²)（样本不足的提前期官方直用 φ=1）
     weights = np.ones(24)
     for lead in range(24):
         m_ = mask[:, :, lead]
@@ -118,18 +127,27 @@ def pv_point(cfg: Q3Config, year: YearData, fc: YearForecast, j: int, m: int,
     """
     h0 = 36 * m
     tau = VINTAGE_HOURS[m]
+
+    # 左锚：τ_m 已实现功率（m=0 无已实现段，锚 0）
     anchor = 0.0 if m == 0 else year.r[j, h0 - 1] / DELTA
+
+    # I1 线性降尺度：左锚 + 官方整点预报为节点，线性插值到 10 分钟网格 × Δ
     node_t = np.array([tau] + [tau + h for h in range(1, 25 - tau)], float)
     node_v = np.concatenate([[anchor], fc.phi[j, m, :24 - tau]])
     theta = (np.arange(h0, T) + 1) * DELTA             # 各时段末点，小时
     off = np.interp(theta, node_t, node_v) * DELTA      # kWh
+
+    # PB0 / 冷启动：官方降尺度直用
     if cfg.fusion == "PB0" or weights is None:
         tail = off
     else:
+        # F1 融合：r̂ = φ(h)·降尺度 + (1−φ(h))·持续法，提前期 h = ceil(θ−τ)
         hist = year.r[:j]
         pers = (hist[-cfg.pv_window:].mean(axis=0) if len(hist) else typ_r)[h0:]
         lead = np.ceil(theta - tau).astype(int) - 1      # 提前期 h = ceil(θ−τ)
         tail = weights[lead] * off + (1.0 - weights[lead]) * pers
+
+    # 已实现前缀填实际值（预报语义只在 t ≥ 6τ_m），负值截 0
     out = year.r[j].copy()
     out[h0:] = np.maximum(tail, 0.0)
     return out
@@ -140,8 +158,12 @@ def load_point(cfg: Q3Config, ell_hat0: np.ndarray, year: YearData,
     """阶段 m 的负载点预报（文档 §4.2）：LU1 用当日已实现段与基线同段
     之比缩放；LU0 静态。m = 0 无已实现段，恒为基线。"""
     h0 = 36 * m
+
+    # LU0 / m=0 无已实现段：静态沿用基线
     if cfg.load_update == "LU0" or m == 0:
         return ell_hat0
+
+    # LU1：ρ = Σℓ_已实现/Σℓ̂_基线（截断 [ρ_lo, ρ_hi]），ℓ̂ ← ℓ̂·ρ
     done = slice(0, h0)
     den = float(ell_hat0[done].sum())
     rho = (year.ell[j][done].sum() / den if den > 1e-9 else 1.0)
@@ -174,32 +196,37 @@ def build_scenarios(cfg: Q3Config, year: YearData,
     """
     h0 = 36 * m
     base = ell_hat - r_hat
+
+    # 无阶段预报历史：退化 N_s = 1（点预报本身）
     if not hist:
         return base[None, :]
     pool = np.arange(max(0, j - cfg.resid_window), j)[-cfg.ns:]
     seg = slice(h0, T)
 
+    # 残差（只对预报段 t ≥ 6τ_m）：ε^L = ℓ − ℓ̂（加性）；ε^R = (r − r̂)/max(r̂, r_ε)
     def residuals(i: int) -> tuple[np.ndarray, np.ndarray]:
         ell_i, r_i = hist[i][m]
         eps_l = year.ell[i][seg] - ell_i[seg]
         eps_r = (year.r[i][seg] - r_i[seg]) / np.maximum(r_i[seg], R_EPS)
         return eps_l, eps_r
 
+    # S-c：混池只取覆盖当前预报段的阶段（m_ ≤ m）有放回抽样——更晚阶段
+    # 残差在近段恒为 0（已实现前缀），混入会注入伪完美预见情景
     if cfg.pool == "S-c":
-        # 混池只取覆盖当前预报段的阶段（m_ ≤ m）：更晚阶段残差在近段
-        # 恒为 0（已实现前缀），混入会注入伪完美预见情景
         flat = [(i, m_) for i in pool for m_ in range(m + 1)]
         draws = [flat[k] for k in rng.integers(0, len(flat), size=cfg.ns)]
         pairs = [(year.ell[i][seg] - hist[i][m_][0][seg],
                   (year.r[i][seg] - hist[i][m_][1][seg])
                   / np.maximum(hist[i][m_][1][seg], R_EPS))
                  for i, m_ in draws]
+    # S-b：提前期桶 {1–6, 7–12, 13–24} h（与修订块对齐）各桶独立洗牌拼接
     elif cfg.pool == "S-b":
         buckets = [b for b in
                    ((h0, h0 + 36), (h0 + 36, h0 + 72), (h0 + 72, T))
                    if b[0] < min(b[1], T)]
         orders = [rng.permutation(len(pool)) for _ in buckets]
         pairs = []
+        # 情景 s：逐桶取洗牌后第 s 条残差曲线的对应段拼接
         for s in range(len(pool)):
             eps_l = np.zeros(T - h0)
             eps_r = np.zeros(T - h0)
@@ -210,6 +237,8 @@ def build_scenarios(cfg: Q3Config, year: YearData,
             pairs.append((eps_l, eps_r))
     else:                                                # S-a：整条全取
         pairs = [residuals(int(i)) for i in pool]
+
+    # 贴加（同题2）：ℓ^(s) = [ℓ̂+ε^L]_+，r^(s) = [r̂(1+ε^R)]_+；已实现前缀为真值
     nets = np.empty((len(pairs), T))
     for s, (eps_l, eps_r) in enumerate(pairs):
         nets[s, :h0] = base[:h0]
