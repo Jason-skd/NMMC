@@ -221,5 +221,5 @@ def build_scenarios(cfg: ForecastConfig, year: YearData,
 
 
 def reference_path(scn: np.ndarray, alpha: float) -> np.ndarray:
-    """执行层 MPC 参考路径：逐时段情景净负荷的 α 分位（文档 §7.2）。"""
+    """确定性等价 MPC 的参考路径：逐时段情景净负荷的 α 分位（文档 §7.3）。"""
     return np.quantile(scn, alpha, axis=0)

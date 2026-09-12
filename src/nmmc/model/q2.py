@@ -1,10 +1,12 @@
 """题2 规划层与补救 LP（稀疏 HiGHS）。
 
-两个入口共用物理模板 X(g, S_0, n)（文档 §5）：
+三个入口共用物理模板 X(g, S_0, n)（文档 §5）：
     solve_planning  日前两阶段场景 LP（SAA）——g 为 here-and-now 共享变量，
                     情景块 (c,d,u,w,S) 独立；计划购电费不进情景平均。
     solve_recourse  单路径补救 LP——g 为参数（平衡式右端移项），
                     事后最优（全天）与 MPC 剩余时域（尾部切片）共用。
+    solve_stochastic_step  在线随机 MPC 的单步两阶段 LP——当步决策
+                    here-and-now 全情景共享，剩余时域按情景分支（§7.2）。
 
 变量布局（每情景块）：[c(T'), d(T'), u(T'), w(T'), S(T'+1)]。
 等式约束（每块）：T' 供需平衡 g+d+u−c−w = n 与 T' SOC 递推
@@ -15,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.model.lp import (E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp,
+from nmmc.model.lp import (E_MAX_PER, ETA, S_MAX, S_MIN, T, solve_eq_lp,
                            soc_recursion)
 
 KAPPA = 5.0    # 紧急购电倍率
@@ -163,3 +165,119 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         c=x[o_c:o_c + n_t], d=x[o_d:o_d + n_t],
         u=x[o_u:o_u + n_t], w=x[o_w:o_w + n_t],
         S=x[o_s:o_s + n_t + 1], obj=float(obj @ x))
+
+
+@dataclass
+class StepResult:
+    """在线随机 MPC 单步两阶段 LP 最优解（文档 §7.2）。
+
+    Attributes:
+        c / d / u / w: 当步补救量（母线侧），kWh——here-and-now 决策，
+            全部情景共享；执行层只执行本时段。
+        obj: 步进目标值 κp_t·u_t + Σπ_s(κΣp·u^s − ν·S^s_end)（诊断用，
+            不是现金费用）。
+    """
+
+    c: float
+    d: float
+    u: float
+    w: float
+    obj: float
+
+
+def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
+                          scn: np.ndarray, probs: np.ndarray, t: int,
+                          s_prev: float, nu_end: float,
+                          kappa: float) -> StepResult:
+    """解在线随机 MPC 的单步两阶段 LP（文档 §7.2）。
+
+    第一阶段（here-and-now）：当步 (c,d,u,w) 与 S_{t+1} 全情景共享，
+    平衡用真值 n_t、SOC 递推用真实 S_t——非预期性的紧凑写法；第二阶段
+    （wait-and-see）：剩余 m = T−1−t 段每情景一块 (c^s,d^s,u^s,w^s,S^s)，
+    S^s 锚定共享的 S_{t+1}。目标 κp_t·u_t + Σ_s π_s(κΣ_{τ>t} p_τ·u^s_τ
+    − ν·S^s_end)。m = 0（末时段）无未来分支，−ν·S_{t+1} 显式入目标
+    （自检 C15：否则求解器对"放电后弃掉"无差异，末段白弃电）。
+
+    Args:
+        p: 逐时段电价，元/kWh，shape (144,)。
+        net: 当日真实净负荷，kWh，shape (144,)。
+        g: 已锁定的计划购电量，shape (144,)。
+        scn: 0:00 净负荷情景 n^(s)，shape (N_s, 144)。
+        probs: 情景概率 π_s，shape (N_s,)。
+        t: 当前时段（0 基）。
+        s_prev: 真实储电量 S_t（时段初）。
+        nu_end: 时域末端储电量估值 ν^end。
+        kappa: 紧急购电倍率 κ。
+
+    Returns:
+        StepResult: 当步决策与步进目标值。S_{t+1} 由执行层按真实递推
+        重建，不经求解器往返。
+
+    Raises:
+        RuntimeError: LP 不可行或未达最优（§7.7 恒可行性保证不发生，
+        出现即为实现错误）。
+    """
+    m = T - 1 - t
+    if m == 0:
+        # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（C15）
+        obj = np.array([0.0, 0.0, kappa * p[t], 0.0, -nu_end])
+        rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
+        cols = [np.array([1, 2, 3, 0]), np.array([4, 0, 1])]
+        vals = [np.array([1.0, 1.0, -1.0, -1.0]),
+                np.array([1.0, -ETA, 1.0 / ETA])]
+        b = np.array([net[t] - g[t], s_prev])
+        lo = np.array([0.0, 0.0, 0.0, 0.0, S_MIN])
+        hi = np.array([E_MAX_PER, E_MAX_PER, np.inf, np.inf, S_MAX])
+        x, _, z = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
+        return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
+                          w=float(x[3]), obj=z)
+
+    n_s = len(scn)
+    blk = 5 * m + 1
+    n = 5 + n_s * blk
+    obj = np.zeros(n)
+    obj[2] = kappa * p[t]                    # 当步紧急购电（g_t 已锁定，沉没）
+    lo = np.zeros(n)
+    hi = np.full(n, np.inf)
+    hi[0] = hi[1] = E_MAX_PER                # 当步 c / d 功率上限
+    lo[4] = S_MIN                            # 共享 S_{t+1}
+    hi[4] = S_MAX
+    # 当步平衡 d+u−c−w = n_t−g_t 与 SOC 递推 S_{t+1}−ηc+d/η = S_t
+    rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
+    cols = [np.array([1, 2, 3, 0]), np.array([4, 0, 1])]
+    vals = [np.array([1.0, 1.0, -1.0, -1.0]),
+            np.array([1.0, -ETA, 1.0 / ETA])]
+    b = [net[t] - g[t], s_prev]
+    tt = np.arange(m)
+    for s in range(n_s):
+        o_c = 5 + s * blk
+        o_d, o_u = o_c + m, o_c + 2 * m
+        o_w, o_s = o_c + 3 * m, o_c + 4 * m
+        pi = float(probs[s])
+        obj[o_u:o_u + m] = pi * kappa * p[t + 1:]
+        obj[o_s + m] = -pi * nu_end
+        hi[o_c:o_c + m] = E_MAX_PER
+        hi[o_d:o_d + m] = E_MAX_PER
+        lo[o_s:o_s + m + 1] = S_MIN
+        hi[o_s:o_s + m + 1] = S_MAX
+        # 情景块锚定：S^s[0] = S_{t+1}
+        r0 = 2 + s * (2 * m + 1)
+        rows.append(np.array([r0, r0]))
+        cols.append(np.array([o_s, 4]))
+        vals.append(np.array([1.0, -1.0]))
+        b.append(0.0)
+        # 剩余时域平衡 g+d^s+u^s−c^s−w^s = n̂^s
+        r = r0 + 1 + tt
+        rows += [r, r, r, r]
+        cols += [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
+        vals += [-np.ones(m), np.ones(m), np.ones(m), -np.ones(m)]
+        b.extend((scn[s, t + 1:] - g[t + 1:]).tolist())
+        soc_rows, soc_cols, soc_vals = soc_recursion(
+            m, r0 + 1 + m, o_s, o_c, o_d)
+        rows += soc_rows
+        cols += soc_cols
+        vals += soc_vals
+        b.extend([0.0] * m)
+    x, _, z = solve_eq_lp(obj, rows, cols, vals, np.asarray(b), lo, hi)
+    return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
+                      w=float(x[3]), obj=z)
