@@ -19,7 +19,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.model.lp import (ETA, E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp)
+from nmmc.model.lp import (E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp,
+                           soc_recursion)
 
 BETA_MINUS = 0.5        # 违约倍率 β⁻（计划高于调整的部分，文档 §2.3）
 BETA_PLUS = 1.5         # 加价倍率 β⁺（调整高于计划的部分）
@@ -159,12 +160,11 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
             vals.append(np.ones(n_free))
         b += list(scn[s, h0:])
         row += nh
-        # SOC 递推：S_{τ+1} − S_τ − ηc + d/η = 0（行号 row+τ，S 列 +1）
-        rs = row + tt
-        rows += [rs, rs, rs, rs]
-        cols += [o_st + 1 + tt, o_st + tt, o_c + tt, o_d + tt]
-        vals += [np.ones(nh), -np.ones(nh), np.full(nh, -ETA),
-                 np.full(nh, 1.0 / ETA)]
+        # SOC 递推：S_{τ+1} − S_τ − ηc + d/η = 0
+        soc_rows, soc_cols, soc_vals = soc_recursion(nh, row, o_st, o_c, o_d)
+        rows += soc_rows
+        cols += soc_cols
+        vals += soc_vals
         b += [0.0] * nh
         row += nh
         # 物理边界与目标（紧急 + 末端估值）
@@ -231,12 +231,13 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     hi[o_st:o_st + n_t + 1] = S_MAX
     lo[o_st] = hi[o_st] = s_start
     tt = np.arange(n_t)
-    rows = [tt, tt, tt, tt] + [n_t + tt] * 4
-    cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt,
-            o_st + 1 + tt, o_st + tt, o_c + tt, o_d + tt]
-    vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t),
-            np.ones(n_t), -np.ones(n_t), np.full(n_t, -ETA),
-            np.full(n_t, 1.0 / ETA)]
+    rows = [tt, tt, tt, tt]
+    cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
+    vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t)]
+    soc_rows, soc_cols, soc_vals = soc_recursion(n_t, n_t, o_st, o_c, o_d)
+    rows += soc_rows
+    cols += soc_cols
+    vals += soc_vals
     b = list(np.where(free_mask, net, net - committed)) + [0.0] * n_t
     if n_f:
         # 未锁定段：注入变量 af 进平衡式；偏差 af − δ+ + δ− = g（新行，
