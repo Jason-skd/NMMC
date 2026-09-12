@@ -1,8 +1,7 @@
-"""题3 数据层：附件3 官方光伏预报加载与修订阶段索引。
+"""附件3 官方光伏预报加载。
 
-文档引用 docs/题3变量定义.md（v3）：§1 集合（m/τ_m/B_m）、§2.2 附件3
-结构与时间对齐、§2.3 倍率 β±。日索引 0 基（day 0 = 2025-01-01 = 文档 j=1），
-与 q2.data 一致；系统常数（κ、ν^end、暖机期等）直接沿用 q2.data。
+文档引用 docs/题3变量定义.md（v3）：§2.2 附件3 结构与时间对齐。
+日索引 0 基（day 0 = 2025-01-01 = 文档 j=1），与 data.year 一致。
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,12 +10,6 @@ import numpy as np
 import pandas as pd
 
 from nmmc.data import ATTACH
-
-BETA_MINUS = 0.5        # 违约倍率 β⁻（计划高于调整的部分，文档 §2.3）
-BETA_PLUS = 1.5         # 加价倍率 β⁺（调整高于计划的部分）
-VINTAGE_HOURS = (0, 6, 12, 18)   # 修订时刻 τ_m（小时），m = 0..3
-BLOCK_LEN = 36                    # 修订块 B_m 的时段数（6 小时 × 6 时段/h）
-BLOCK_STARTS = (0, 36, 72, 108)   # B_m 的 0 基起始时段 = 6·τ_m
 
 
 @dataclass(frozen=True)

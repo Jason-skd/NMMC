@@ -1,6 +1,6 @@
 """题3 规划层与 MPC 尾部 LP（稀疏 HiGHS）。
 
-两个入口共用题2 档 §5 的物理模板（nmmc.q2.lp 的布局约定，g → a）：
+两个入口共用题2 档 §5 的物理模板（nmmc.model.q2 的布局约定，g → a）：
     solve_stage  阶段 m 两阶段场景 LP（文档 §7.1）——本块承诺 a(B_m)
                  （m=0 为全天计划 g）是 here-and-now 共享变量，更晚块的
                  试探 a^(s) 是 wait-and-see（偏差费计入期望，正确预期
@@ -11,14 +11,22 @@
 
 变量布局（题2 档约定）：每情景块 [c(T'), d(T'), u(T'), w(T'), S(T'+1)]；
 偏差量 δ+/δ− 仅对可调整时段存在。S 初值由 bounds 钉在锚点。
+
+题3 档常数（docs/题3变量定义.md §1 集合与 §2.3 倍率）：修订时刻 τ_m、
+块结构 B_m 与结算倍率 β± 定义于此。
 """
 from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.lp import ETA, E_MAX_PER, S_MAX, S_MIN, T
-from nmmc.q2.lp import _solve
-from nmmc.q3.data import BETA_MINUS, BETA_PLUS
+from nmmc.model.lp import (E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp,
+                           soc_recursion)
+
+BETA_MINUS = 0.5        # 违约倍率 β⁻（计划高于调整的部分，文档 §2.3）
+BETA_PLUS = 1.5         # 加价倍率 β⁺（调整高于计划的部分）
+VINTAGE_HOURS = (0, 6, 12, 18)   # 修订时刻 τ_m（小时），m = 0..3
+BLOCK_LEN = 36                    # 修订块 B_m 的时段数（6 小时 × 6 时段/h）
+BLOCK_STARTS = (0, 36, 72, 108)   # B_m 的 0 基起始时段 = 6·τ_m
 
 
 @dataclass
@@ -152,12 +160,11 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
             vals.append(np.ones(n_free))
         b += list(scn[s, h0:])
         row += nh
-        # SOC 递推：S_{τ+1} − S_τ − ηc + d/η = 0（行号 row+τ，S 列 +1）
-        rs = row + tt
-        rows += [rs, rs, rs, rs]
-        cols += [o_st + 1 + tt, o_st + tt, o_c + tt, o_d + tt]
-        vals += [np.ones(nh), -np.ones(nh), np.full(nh, -ETA),
-                 np.full(nh, 1.0 / ETA)]
+        # SOC 递推：S_{τ+1} − S_τ − ηc + d/η = 0
+        soc_rows, soc_cols, soc_vals = soc_recursion(nh, row, o_st, o_c, o_d)
+        rows += soc_rows
+        cols += soc_cols
+        vals += soc_vals
         b += [0.0] * nh
         row += nh
         # 物理边界与目标（紧急 + 末端估值）
@@ -169,7 +176,7 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         hi[o_st:o_st + nh + 1] = S_MAX
         lo[o_st] = hi[o_st] = s_anchor
 
-    x = _solve(obj, rows, cols, vals, np.array(b), lo, hi)
+    x, _, _ = solve_eq_lp(obj, rows, cols, vals, np.array(b), lo, hi)
     commit = (committed.copy() if committed is not None
               else np.zeros(T))
     commit[h0:he] = x[o_hn:o_hn + n_hn]
@@ -224,12 +231,13 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     hi[o_st:o_st + n_t + 1] = S_MAX
     lo[o_st] = hi[o_st] = s_start
     tt = np.arange(n_t)
-    rows = [tt, tt, tt, tt] + [n_t + tt] * 4
-    cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt,
-            o_st + 1 + tt, o_st + tt, o_c + tt, o_d + tt]
-    vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t),
-            np.ones(n_t), -np.ones(n_t), np.full(n_t, -ETA),
-            np.full(n_t, 1.0 / ETA)]
+    rows = [tt, tt, tt, tt]
+    cols = [o_c + tt, o_d + tt, o_u + tt, o_w + tt]
+    vals = [-np.ones(n_t), np.ones(n_t), np.ones(n_t), -np.ones(n_t)]
+    soc_rows, soc_cols, soc_vals = soc_recursion(n_t, n_t, o_st, o_c, o_d)
+    rows += soc_rows
+    cols += soc_cols
+    vals += soc_vals
     b = list(np.where(free_mask, net, net - committed)) + [0.0] * n_t
     if n_f:
         # 未锁定段：注入变量 af 进平衡式；偏差 af − δ+ + δ− = g（新行，
@@ -246,7 +254,7 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         obj[o_af:o_af + n_f] = p[free]
         obj[o_af + n_f:o_af + 2 * n_f] = 0.5 * p[free]
         obj[o_af + 2 * n_f:] = 0.5 * p[free]
-    x = _solve(obj, rows, cols, vals, np.array(b), lo, hi)
+    x, _, _ = solve_eq_lp(obj, rows, cols, vals, np.array(b), lo, hi)
     return (x[o_c:o_c + n_t], x[o_d:o_d + n_t], x[o_u:o_u + n_t],
             x[o_w:o_w + n_t], x[o_st:o_st + n_t + 1])
 

@@ -9,14 +9,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.lp import ETA, T
-from nmmc.q2.data import ALPHA_RT, KAPPA, NU_END, S0_INIT, YearData
-from nmmc.q2.forecast import ForecastConfig, forecast_load, reference_path
-from nmmc.q2.lp import solve_planning, solve_recourse
-from nmmc.q3.data import YearForecast
-from nmmc.q3.forecast import (Q3Config, build_scenarios, fusion_weights,
-                              hour_powers, load_point, pv_point)
-from nmmc.q3.lp import settle_cost, solve_stage, solve_tail
+from nmmc.data.fcst import YearForecast
+from nmmc.data.year import YearData
+from nmmc.model.forecast import (ForecastConfig, forecast_load,
+                                 reference_path)
+from nmmc.model.forecast3 import (Q3Config, build_scenarios, fusion_weights,
+                                  hour_powers, load_point, pv_point)
+from nmmc.model.lp import ETA, T
+from nmmc.model.q2 import KAPPA, NU_END, solve_planning, solve_recourse
+from nmmc.model.q3 import settle_cost, solve_stage, solve_tail
+from nmmc.run.q2 import ALPHA_RT, S0_INIT
 
 
 @dataclass

@@ -1,7 +1,7 @@
 """论文图表：调度图、数据总览、对偶分析、S_0 敏感性。
 
-所有类结构化满足 extract.Extractor 协议
-（extract(data, sol, out_dir) -> Path），无需显式继承。
+所有类结构化满足 report.q1.Exporter 协议
+（export(data, sol, out_dir) -> Path），无需显式继承。
 配色与图表规范遵循 dataviz 参考实例（浅色模式）：单轴、固定槽位、细标记、隐性网格。
 
 跨图实体配色（固定槽位，颜色跟随实体）：
@@ -17,8 +17,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 
-from nmmc.data import DayData
-from nmmc.lp import S_MAX, S_MIN, Solution, T
+from nmmc.data.day import DayData
+from nmmc.model.lp import S_MAX, S_MIN, T
+from nmmc.model.q1 import Solution
 
 SURFACE = "#fcfcfb"
 INK, INK2, MUTED = "#0b0b0b", "#52514e", "#898781"
@@ -86,7 +87,7 @@ BAND_LABELS = ["谷段（电价低 1/3）", "峰段（电价高 1/3）"]
 class SchedulePlot:
     """三联调度图：电价与边际价值 / 功率流 / 储电量轨迹（q1_schedule.png）。"""
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """渲染三联调度图并返回 PNG 路径。
 
         Args:
@@ -153,7 +154,7 @@ class SchedulePlot:
 class DataOverview:
     """附件1 原始数据总览：电价 / 光伏与负载 / 净负荷（q1_data_overview.png）。"""
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """渲染三联数据总览图并返回 PNG 路径。
 
         Args:
@@ -207,7 +208,7 @@ class DualEconomics:
     三条曲线同为 元/kWh，单轴合规。ν 平滑如"内部汇率"，p 尖刺；
     放电时段 λ 低于 p（电池是更便宜的边际电源），充电时段 λ = p。
     """
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """渲染对偶分析图并返回 PNG 路径。
 
         Args:
@@ -267,7 +268,7 @@ class S0Basin:
         self.z_star = z_star
         self.z6000 = z6000
 
-    def extract(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
+    def export(self, data: DayData, sol: Solution, out_dir: Path) -> Path:
         """渲染 S_0 敏感性曲线并返回 PNG 路径。
 
         Args:

@@ -1,4 +1,4 @@
-"""题1 LP 建模（题2-4 复用骨架）。
+"""题1 LP 建模。
 
 变量布局 x = [g(144), c(144), d(144), w(144), S(145)]，共 721 列：
     g  计划购电量 kWh（外网关口侧）
@@ -15,13 +15,9 @@
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.optimize import linprog
 
-T = 144
-ETA = 0.9                 # 单向充放电效率
-P_MAX = 5000.0            # kW，母线侧
-E_MAX_PER = P_MAX / 6     # 833.33 kWh，单时段充/放电量上限
-S_MIN, S_MAX = 1200.0, 10800.0
+from nmmc.model.lp import (E_MAX_PER, S_MAX, S_MIN, T, solve_eq_lp,
+                           soc_recursion)
 
 NG, NC, ND, NW, NS = 0, T, 2 * T, 3 * T, 4 * T
 N = 5 * T + 1
@@ -74,57 +70,49 @@ def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
     Raises:
         RuntimeError: LP 求解失败（不可行或未达最优）。
     """
-    t = np.arange(T)
-    A = np.zeros((2 * T + 1, N))
-    b = np.zeros(2 * T + 1)
+    tt = np.arange(T)
 
     # 供需平衡：g + d - c - w = ell - r
-    A[t, NG + t] = 1.0
-    A[t, ND + t] = 1.0
-    A[t, NC + t] = -1.0
-    A[t, NW + t] = -1.0
-    b[t] = ell - r
+    rows = [tt] * 4
+    cols = [NG + tt, ND + tt, NC + tt, NW + tt]
+    vals = [np.ones(T), np.ones(T), -np.ones(T), -np.ones(T)]
 
     # SOC 递推：S_t - S_{t-1} - eta*c + d/eta = 0
-    row = T + t
-    A[row, NS + 1 + t] = 1.0
-    A[row, NS + t] = -1.0
-    A[row, NC + t] = -ETA
-    A[row, ND + t] = 1.0 / ETA
+    soc_rows, soc_cols, soc_vals = soc_recursion(T, T, NS, NC, ND)
+    rows += soc_rows
+    cols += soc_cols
+    vals += soc_vals
 
     # 昼夜循环：S_144 - S_0 = 0
-    A[2 * T, NS + T] = 1.0
-    A[2 * T, NS] = -1.0
+    rows += [[2 * T, 2 * T]]
+    cols += [[NS + T, NS]]
+    vals += [[1.0, -1.0]]
+
+    b = np.concatenate([ell - r, np.zeros(2 * T)])
 
     obj = np.zeros(N)
     obj[NG:NG + T] = p
 
-    bounds = (
-        [(0, None)] * T               # g
-        + [(0, E_MAX_PER)] * T        # c
-        + [(0, E_MAX_PER)] * T        # d
-        + [(0, None)] * T             # w
-        + [(S_MIN, S_MAX)] * (T + 1)  # S
-    )
+    lo = np.zeros(N)
+    hi = np.full(N, np.inf)
+    hi[NC:NC + T] = E_MAX_PER         # c
+    hi[ND:ND + T] = E_MAX_PER         # d
+    lo[NS:] = S_MIN
+    hi[NS:] = S_MAX                   # S
     if s0_fixed is not None:
-        bounds[NS] = (s0_fixed, s0_fixed)
+        lo[NS] = hi[NS] = s0_fixed
     if rule_thresholds is not None:
         low, high = rule_thresholds
         for t_ in range(T):
             if p[t_] > low and r[t_] <= ell[t_]:
-                bounds[NC + t_] = (0.0, 0.0)   # 该时段禁止充电
+                hi[NC + t_] = 0.0     # 该时段禁止充电
             if p[t_] < high:
-                bounds[ND + t_] = (0.0, 0.0)   # 该时段禁止放电
+                hi[ND + t_] = 0.0     # 该时段禁止放电
 
-    res = linprog(obj, A_eq=A, b_eq=b, bounds=bounds, method="highs")
-    if not res.success:
-        raise RuntimeError(f"LP 求解失败: {res.message}")
-
-    x = res.x
-    duals = res.eqlin.marginals
+    x, duals, cost = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
     return Solution(
         g=x[NG:NG + T], c=x[NC:NC + T], d=x[ND:ND + T],
-        w=x[NW:NW + T], S=x[NS:], cost=float(res.fun),
+        w=x[NW:NW + T], S=x[NS:], cost=cost,
         lam=duals[:T].copy(),
         nu=-duals[T:2 * T],
     )

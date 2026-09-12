@@ -13,13 +13,14 @@ import openpyxl
 import pandas as pd
 
 from nmmc.data import ATTACH
-from nmmc.lp import ETA, T
-from nmmc.q2.data import EPS_EMERG, KAPPA, WARMUP_DAYS, YearData
-from nmmc.q2.report import (BLOCK_LABELS, PAPER_DATES, PAPER_SLOTS,
-                            _md_table, emergency_segments, report_days,
-                            segment_label)
-from nmmc.q3.execute import DayResult
-from nmmc.q3.lp import beta_check
+from nmmc.data.year import YearData
+from nmmc.model.lp import ETA, T
+from nmmc.model.q2 import KAPPA
+from nmmc.model.q3 import beta_check
+from nmmc.report.common import PAPER_SLOTS, md_table, segment_label
+from nmmc.report.q2 import (BLOCK_LABELS, EPS_EMERG, PAPER_DATES,
+                            WARMUP_DAYS, emergency_segments, report_days)
+from nmmc.run.q3 import DayResult
 
 TEMPLATE = ATTACH / "附件5" / "result3.xlsx"
 
@@ -259,7 +260,7 @@ class SummaryMd:
         """写出 q3_summary.md 并返回路径。"""
         s = self.summary
         money = lambda x: f"{x:,.2f} 元"
-        core = _md_table(["指标", "数值"], [
+        core = md_table(["指标", "数值"], [
             ("Z^online（交付）", money(s["Z_online"])),
             ("Z^ex-post", money(s["Z_expost"])),
             ("Z^PI", money(s["Z_pi"])),
@@ -276,14 +277,14 @@ class SummaryMd:
             ("SOC 均值 / 范围", f"{s['SOC 均值']:,.1f} kWh / "
              f"{s['SOC 范围'][0]:,.1f} ~ {s['SOC 范围'][1]:,.1f}"),
         ])
-        adj = _md_table(["指标", "数值"], [
+        adj = md_table(["指标", "数值"], [
             ("δ+ 合计（上调）", f"{s['δ+ 合计']:,.1f} kWh"),
             ("δ− 合计（下调）", f"{s['δ− 合计']:,.1f} kWh"),
             ("方向比 δ+/δ−", f"{s['方向比 δ+/δ−']:,.1f}"
              if np.isfinite(s["方向比 δ+/δ−"]) else "∞"),
             ("调整行使率（t≥36 时段）", f"{s['调整行使率'] * 100:.1f}%"),
         ])
-        checks = _md_table(["检查项", "数值"], [
+        checks = md_table(["检查项", "数值"], [
             (k, f"{s[k]:.6f}" if isinstance(s[k], float) else s[k])
             for k in ("C3-3 结算式恒等残差", "C3-7 前缀偏差 max",
                       "C6 对账残差 max", "C7 能量守恒残差 max",
@@ -300,7 +301,7 @@ class SummaryMd:
                              *[f"{day.a[t - 1]:.2f}" for t in PAPER_SLOTS],
                              f"{day.g.sum():.2f}", f"{day.a.sum():.2f}",
                              f"{day.z:.2f}"))
-        table1 = _md_table(
+        table1 = md_table(
             ["日期"] + [f"计划 t={t}" for t in PAPER_SLOTS]
             + [f"调整 t={t}" for t in PAPER_SLOTS]
             + ["全天计划", "全天调整", "全天购电费"], tab_rows)

@@ -4,15 +4,18 @@
 文档 §3–§4：附件3 误差随提前期急剧劣化、持续法误差与提前期无关（数据
 核验第 4 条），故点预报按提前期反方差加权融合；残差池必须按提前期分桶，
 否则混池会严重高估短提前期的不确定性。负载日前基线沿用题2 候选
-（q2.forecast，只用 [:j] 历史）；日内缩放只用当日已实现段（τ_m 时合法）。
+（model.forecast，只用 [:j] 历史）；日内缩放只用当日已实现段（τ_m 时合法）。
 """
 from dataclasses import dataclass
 
 import numpy as np
 
 from nmmc.data import DELTA
-from nmmc.q2.data import R_EPS, T, YearData
-from nmmc.q3.data import VINTAGE_HOURS, YearForecast
+from nmmc.data.fcst import YearForecast
+from nmmc.data.year import YearData
+from nmmc.model.forecast import R_EPS
+from nmmc.model.lp import T
+from nmmc.model.q3 import VINTAGE_HOURS
 
 HOUR_SLOTS = slice(5, T, 6)   # 各整点对应时段（0 基 t = 6H−1，行标签为该整点）
 

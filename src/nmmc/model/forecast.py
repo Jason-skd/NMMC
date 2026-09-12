@@ -10,7 +10,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from nmmc.q2.data import R_EPS, T, YearData
+from nmmc.data.year import YearData
+from nmmc.model.lp import T
+
+R_EPS = 1.0  # 光伏相对残差防除零下限，kWh（文档 §3.3）
 
 
 @dataclass(frozen=True)

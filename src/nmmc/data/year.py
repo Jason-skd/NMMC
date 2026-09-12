@@ -10,17 +10,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from nmmc.data import ATTACH, DELTA
+from nmmc.data import ATTACH, DELTA, T
 
-DAYS = 365
-T = 144
-WARMUP_DAYS = 31      # 1.1–1.31 暖机期，完整模拟但不交付（文档 §1）
-S0_INIT = 6000.0      # 2025.1.1 0:00 储电量，全年 SOC 链的锚（文档 §2.2）
-KAPPA = 5.0           # 紧急购电倍率
-NU_END = 0.472        # 日末储电量估值锚，元/kWh（文档 §2.3）
-ALPHA_RT = 0.65       # MPC 参考路径分位（执行层独立调参维度，文档 §7.2）
-EPS_EMERG = 1e-6      # 紧急购电报表阈值，kWh
-R_EPS = 1.0           # 光伏相对残差防除零下限，kWh（文档 §3.3）
+DAYS = 365  # 全年日数（附件2 数据行数）
 
 
 @dataclass(frozen=True)
