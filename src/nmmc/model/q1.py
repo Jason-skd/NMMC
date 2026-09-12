@@ -9,7 +9,9 @@
 
 等式约束 289 条：144 供需平衡 + 144 SOC 递推 + 1 昼夜循环。
 对偶变量：lam_t = 平衡约束影子价格（母线边际价值，元/kWh）；
-         nu_t  = SOC 递推影子价格的相反数（储能边际价值，正号约定，见文档 §7）。
+         nu_t  = SOC 递推影子价格的相反数（储能边际价值，正号约定，见文档 §7）；
+         nu_cycle = 昼夜循环约束 S_144 = S_0 的对偶（池内 1 kWh 跨日结转
+         的边际价值，题4 档 §4.3 逐日 ν^end 标定取其绝对值）。
 符号与约束见 docs/题1变量定义.md。
 """
 from dataclasses import dataclass
@@ -37,6 +39,8 @@ class Solution:
         lam: 平衡约束对偶 λ_t（母线边际价值），元/kWh；不可得时为 None。
         nu: 储能边际价值 ν_t（原始对偶取负的正号约定，见文档 §7），元/kWh；
             不可得时为 None。
+        nu_cycle: 循环约束对偶（元/kWh）；不可得时为 None。附件1 价格下
+            其绝对值 = 0.472（题4 档 §3 第 18 条自检）。
     """
 
     g: np.ndarray
@@ -47,6 +51,7 @@ class Solution:
     cost: float
     lam: np.ndarray | None = None
     nu: np.ndarray | None = None
+    nu_cycle: float | None = None
 
 
 def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
@@ -123,4 +128,5 @@ def solve(p: np.ndarray, ell: np.ndarray, r: np.ndarray,
         w=x[NW:NW + T], S=x[NS:], cost=cost,
         lam=duals[:T].copy(),
         nu=-duals[T:2 * T],
+        nu_cycle=float(duals[2 * T]),
     )

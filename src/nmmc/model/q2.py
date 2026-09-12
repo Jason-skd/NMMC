@@ -56,17 +56,21 @@ class PathResult:
 
 
 def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
-                   s0: float, nu_end: float,
-                   kappa: float) -> PlanResult:
+                   s0: float, nu_end: float, kappa: float,
+                   p_scn: np.ndarray | None = None) -> PlanResult:
     """解日前两阶段场景 LP（文档 §6）。
 
     Args:
-        p: 逐时段电价，元/kWh，shape (144,)。
+        p: 一阶段计价电价（题4 为情景均值折叠价 p̂ = Σπ_s p^(s)，性质 2
+            使期望计划费精确折叠），元/kWh，shape (144,)。
         scn: 净负荷场景 n^(s)，kWh，shape (N_s, 144)。
         probs: 情景概率 π_s（等权 1/N_s）。
         s0: 当日 0:00 储电量（给定状态）。
         nu_end: 日末储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        p_scn: 情景电价 p^(s)（题4 读法 R），shape (N_s, 144)——紧急项
+            不可折叠、逐情景计价（性质 2 推论 2）；None 即常数价口径
+            （题2 / 读法 D / 附件1 退化，各情景用 p，逐位不变）。
 
     Returns:
         PlanResult: 计划购电量 g 与规划目标值 Z̃。
@@ -106,9 +110,9 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         rows += soc_rows
         cols += soc_cols
         vals += soc_vals
-        # 情景目标（π_s·κΣp·u − π_s·ν·S_144）与变量域（S_0 锚定 s0）
+        # 情景目标（π_s·κΣp^(s)·u − π_s·ν·S_144）与变量域（S_0 锚定 s0）
         pi = probs[s]
-        obj[o_u:o_u + T] = pi * kappa * p
+        obj[o_u:o_u + T] = pi * kappa * (p if p_scn is None else p_scn[s])
         obj[o_s + T] = -pi * nu_end
         lo[o_c:o_c + T] = 0.0
         hi[o_c:o_c + T] = E_MAX_PER
@@ -202,8 +206,8 @@ class StepResult:
 
 def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
                           scn: np.ndarray, probs: np.ndarray, t: int,
-                          s_prev: float, nu_end: float,
-                          kappa: float) -> StepResult:
+                          s_prev: float, nu_end: float, kappa: float,
+                          p_scn: np.ndarray | None = None) -> StepResult:
     """解在线随机 MPC 的单步两阶段 LP（文档 §7.2）。
 
     第一阶段（here-and-now）：当步 (c,d,u,w) 与 S_{t+1} 全情景共享，
@@ -214,7 +218,8 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     （自检 C15：否则求解器对"放电后弃掉"无差异，末段白弃电）。
 
     Args:
-        p: 逐时段电价，元/kWh，shape (144,)。
+        p: 当步计价电价——题4 读法 R 下为当日实现价 p_t^(j)（交易时刻
+            可见，题面"交易时刻电价"），元/kWh，shape (144,)。
         net: 当日真实净负荷，kWh，shape (144,)。
         g: 已锁定的计划购电量，shape (144,)。
         scn: 0:00 净负荷情景 n^(s)，shape (N_s, 144)。
@@ -223,6 +228,8 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         s_prev: 真实储电量 S_t（时段初）。
         nu_end: 时域末端储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        p_scn: 未来分支的情景电价 p^(s)（τ > t 段取 p_scn[s, t+1:]，
+            题4 档 §7）；None 即常数价口径（题2，各情景用 p）。
 
     Returns:
         StepResult: 当步决策与步进目标值。S_{t+1} 由执行层按真实递推
@@ -273,9 +280,10 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         o_c = 5 + s * blk
         o_d, o_u = o_c + m, o_c + 2 * m
         o_w, o_s = o_c + 3 * m, o_c + 4 * m
-        # 情景目标：π_s·κΣ_{τ>t}p·u^s − π_s·ν·S^s_end；变量域同题2 模板
+        # 情景目标：π_s·κΣ_{τ>t}p^(s)·u^s − π_s·ν·S^s_end；变量域同题2 模板
         pi = float(probs[s])
-        obj[o_u:o_u + m] = pi * kappa * p[t + 1:]
+        obj[o_u:o_u + m] = pi * kappa * (p[t + 1:] if p_scn is None
+                                         else p_scn[s, t + 1:])
         obj[o_s + m] = -pi * nu_end
         hi[o_c:o_c + m] = E_MAX_PER
         hi[o_d:o_d + m] = E_MAX_PER

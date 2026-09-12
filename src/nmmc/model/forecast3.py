@@ -5,6 +5,11 @@
 核验第 4 条），故点预报按提前期反方差加权融合；残差池必须按提前期分桶，
 否则混池会严重高估短提前期的不确定性。负载日前基线沿用题2 候选
 （model.forecast，只用 [:j] 历史）；日内缩放只用当日已实现段（τ_m 时合法）。
+
+题4 扩展：build_scenarios 接受可选电价输入时返回 (nets, prices) 二元组
+——电价段不分提前期（题4 档 §4.2），S-b 下与该桶 L/R 段取自同一历史日
+（桶内联合），已实现前缀 [0, 6τ_m) 填实现价。prices 为 None 即常数价
+口径（题3，逐位不变）。
 """
 from dataclasses import dataclass
 
@@ -12,8 +17,9 @@ import numpy as np
 
 from nmmc.data import DELTA
 from nmmc.data.fcst import YearForecast
+from nmmc.data.price import YearPrice
 from nmmc.data.year import YearData
-from nmmc.model.forecast import R_EPS
+from nmmc.model.forecast import R_EPS, price_residual
 from nmmc.model.lp import T
 from nmmc.model.q3 import VINTAGE_HOURS
 
@@ -198,7 +204,10 @@ def load_point(cfg: Q3Config, ell_hat0: np.ndarray, year: YearData,
 def build_scenarios(cfg: Q3Config, year: YearData,
                     hist: list[list[tuple[np.ndarray, np.ndarray]]], j: int,
                     m: int, ell_hat: np.ndarray, r_hat: np.ndarray,
-                    rng: np.random.Generator) -> np.ndarray:
+                    rng: np.random.Generator, *, price: YearPrice | None = None,
+                    p_fcasts: list[np.ndarray] | None = None,
+                    p_hat: np.ndarray | None = None
+                    ) -> tuple[np.ndarray, np.ndarray | None]:
     """逐阶段分池残差场景（文档 §4.3）：伪样本外残差整条贴加。
 
     残差定义（只对预报段 t ≥ 6τ_m）：负载加性 ε^L = ℓ − ℓ̂；光伏相对
@@ -206,6 +215,10 @@ def build_scenarios(cfg: Q3Config, year: YearData,
     历史）中最新 ns 条阶段 m 残差曲线。提前期桶 {1–6, 7–12, 13–24} h
     与修订块对齐（文档 §4.3）：S-b 各桶独立洗牌拼接、S-a 整条全取、
     S-c 跨阶段混池（m_ ≤ m）有放回抽样。
+
+    电价段（题4 档 §4.2，给定价格输入时）：ε^P = (p − p̂)/p̂ 不分提前期，
+    S-b 下与该桶 (ε^L, ε^R) 取自同一历史日（桶内三元联合），已实现前缀
+    [0, 6τ_m) 填实现价。
 
     Args:
         cfg: 题3 预报层配置。
@@ -215,18 +228,26 @@ def build_scenarios(cfg: Q3Config, year: YearData,
         m: 修订阶段。
         ell_hat / r_hat: 当日阶段 m 点预报。
         rng: 固定种子随机源（S-b 洗牌与 S-c 抽样）。
+        price: 附件4 全年实现电价（价格残差真值源；题4 口径）。
+        p_fcasts: 历史各日当时的电价点预报 p̂_i（与 hist 同步滚动，
+            ε^P 不分阶段——电价不做日内更新）。
+        p_hat: 当日 0:00 电价点预报。
 
     Returns:
-        净负荷场景 n^(s)，shape (N_s, 144)；已实现前缀为真值。
+        (nets, prices)：净负荷场景 n^(s)，shape (N_s, 144)，已实现前缀
+        为真值；电价场景 p^(s)（题4 口径），常数价口径为 None。
     """
     h0 = 36 * m
     base = ell_hat - r_hat
+    seg = slice(h0, T)
 
     # 无阶段预报历史：退化 N_s = 1（点预报本身）
     if not hist:
-        return base[None, :]
+        prices = (None if p_hat is None
+                  else np.concatenate([price.p[j, :h0], p_hat[h0:]])
+                  [None, :])
+        return base[None, :], prices
     pool = np.arange(max(0, j - cfg.resid_window), j)[-cfg.ns:]
-    seg = slice(h0, T)
 
     # 残差（只对预报段 t ≥ 6τ_m）：ε^L = ℓ − ℓ̂（加性）；ε^R = (r − r̂)/max(r̂, r_ε)
     def residuals(i: int) -> tuple[np.ndarray, np.ndarray]:
@@ -244,6 +265,7 @@ def build_scenarios(cfg: Q3Config, year: YearData,
                   (year.r[i][seg] - hist[i][m_][1][seg])
                   / np.maximum(hist[i][m_][1][seg], R_EPS))
                  for i, m_ in draws]
+        days = [np.full(T - h0, int(i)) for i, _ in draws]
     # S-b：提前期桶 {1–6, 7–12, 13–24} h（与修订块对齐）各桶独立洗牌拼接
     elif cfg.pool == "S-b":
         buckets = [b for b in
@@ -251,22 +273,37 @@ def build_scenarios(cfg: Q3Config, year: YearData,
                    if b[0] < min(b[1], T)]
         orders = [rng.permutation(len(pool)) for _ in buckets]
         pairs = []
+        days = []
         # 情景 s：逐桶取洗牌后第 s 条残差曲线的对应段拼接
         for s in range(len(pool)):
             eps_l = np.zeros(T - h0)
             eps_r = np.zeros(T - h0)
+            day_s = np.zeros(T - h0, dtype=int)
             for (lo, hi), order in zip(buckets, orders):
-                e_l, e_r = residuals(int(pool[order[s]]))
+                i = int(pool[order[s]])
+                e_l, e_r = residuals(i)
                 eps_l[lo - h0:hi - h0] = e_l[lo - h0:hi - h0]
                 eps_r[lo - h0:hi - h0] = e_r[lo - h0:hi - h0]
+                day_s[lo - h0:hi - h0] = i
             pairs.append((eps_l, eps_r))
+            days.append(day_s)
     else:                                                # S-a：整条全取
         pairs = [residuals(int(i)) for i in pool]
+        days = [np.full(T - h0, int(i)) for i in pool]
 
     # 贴加（同题2）：ℓ^(s) = [ℓ̂+ε^L]_+，r^(s) = [r̂(1+ε^R)]_+；已实现前缀为真值
     nets = np.empty((len(pairs), T))
+    prices = np.empty((len(pairs), T)) if p_hat is not None else None
     for s, (eps_l, eps_r) in enumerate(pairs):
         nets[s, :h0] = base[:h0]
         nets[s, seg] = (np.maximum(ell_hat[seg] + eps_l, 0.0)
                         - np.maximum(r_hat[seg] * (1.0 + eps_r), 0.0))
-    return nets
+        if prices is not None:
+            # 电价段：预报段同日贴加 ε^P（S-b 按桶同日），前缀填实现价
+            prices[s, :h0] = price.p[j, :h0]
+            eps_p = np.zeros(T - h0)
+            for d in np.unique(days[s]):
+                mask = days[s] == d
+                eps_p[mask] = price_residual(price, p_fcasts, int(d))[seg][mask]
+            prices[s, seg] = np.maximum(p_hat[seg] * (1.0 + eps_p), 0.0)
+    return nets, prices

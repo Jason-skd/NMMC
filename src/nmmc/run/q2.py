@@ -65,20 +65,22 @@ def cash_cost(p: np.ndarray, g: np.ndarray, u: np.ndarray,
 
 def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
                 ref: np.ndarray, nu_end: float,
-                kappa: float = KAPPA) -> tuple[np.ndarray, np.ndarray,
-                                               np.ndarray, np.ndarray,
-                                               np.ndarray]:
+                kappa: float = KAPPA, p_fut: np.ndarray | None = None
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+                           np.ndarray]:
     """确定性等价 MPC 执行全天：未来压成单条参考路径（消融对照，§7.3）。
 
     当前时段用真值 n_t，未来时段用参考路径 ref。
 
     Args:
-        p: 逐时段电价，shape (144,)。
+        p: 当步计价电价，shape (144,)（题4 读法 R 下为当日实现价）。
         net: 当日真实净负荷，shape (144,)。
         g: 已锁定的计划购电量，shape (144,)。
         s0: 当日 0:00 储电量。
         ref: α^rt 分位参考路径，shape (144,)。
         nu_end / kappa: 末端估值 / 紧急倍率。
+        p_fut: CE 对照臂的未来价格视图（题4：τ > t 段用情景均值折叠价，
+            "把分布换成其均值"的确定性等价口径）；None 即全时域用 p。
 
     Returns:
         (c, d, u, w, S)：MPC 真实路径，S shape (145,)。
@@ -91,7 +93,9 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
     s[0] = s0
     for t in range(T):
         tail = np.concatenate([net[t:t + 1], ref[t + 1:]])
-        sol = solve_recourse(p[t:], tail, g[t:], s[t], nu_end, kappa)
+        p_t = (p[t:] if p_fut is None
+               else np.concatenate([p[t:t + 1], p_fut[t + 1:]]))
+        sol = solve_recourse(p_t, tail, g[t:], s[t], nu_end, kappa)
         c_t, d_t = sol.c[0], sol.d[0]
         u[t], w[t] = sol.u[0], sol.w[0]
         if c_t > 0.0 and d_t > 0.0:
@@ -108,10 +112,10 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
 
 def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
                  scn: np.ndarray, probs: np.ndarray, s0: float,
-                 nu_end: float,
-                 kappa: float = KAPPA) -> tuple[np.ndarray, np.ndarray,
-                                                np.ndarray, np.ndarray,
-                                                np.ndarray]:
+                 nu_end: float, kappa: float = KAPPA,
+                 p_scn: np.ndarray | None = None
+                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+                            np.ndarray]:
     """在线随机 MPC 执行全天（交付，文档 §7.2）。
 
     逐时段解"当步共享 + 剩余时域按 0:00 情景分支"的两阶段 LP，
@@ -120,13 +124,16 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     折算，而非按必然发生。
 
     Args:
-        p: 逐时段电价，shape (144,)。
+        p: 当步计价电价，shape (144,)（题4 读法 R 下为当日实现价——
+            交易时刻可见，用于当期紧急购电定价，题4 档 §7）。
         net: 当日真实净负荷，shape (144,)。
         g: 已锁定的计划购电量，shape (144,)。
         scn: 0:00 净负荷情景，shape (N_s, 144)。
         probs: 情景概率 π_s，shape (N_s,)。
         s0: 当日 0:00 储电量。
         nu_end / kappa: 末端估值 / 紧急倍率。
+        p_scn: 0:00 情景电价 p^(s)（题4 未来分支用，τ > t）；None 即
+            常数价口径（题2，全时域用 p）。
 
     Returns:
         (c, d, u, w, S)：随机 MPC 真实路径，S shape (145,)。
@@ -139,7 +146,7 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     s[0] = s0
     for t in range(T):
         step = solve_stochastic_step(p, net, g, scn, probs, t, s[t],
-                                     nu_end, kappa)
+                                     nu_end, kappa, p_scn)
         c_t, d_t = step.c, step.d
         u[t], w[t] = step.u, step.w
         if c_t > 0.0 and d_t > 0.0:
@@ -188,7 +195,7 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
     for j in range(days or len(year.dates)):
         ell_hat = forecast_load(cfg, year, j, typ_ell)
         r_hat = forecast_pv(cfg, year, j, typ_r)
-        scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
+        scn, _ = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
         probs = np.full(len(scn), 1.0 / len(scn))
         plan = solve_planning(p, scn, probs, soc, nu_end, kappa)
         ref = reference_path(scn, alpha_rt)
