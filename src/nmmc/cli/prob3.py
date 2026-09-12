@@ -24,6 +24,9 @@ from nmmc.data.fcst import load_forecast
 from nmmc.data.year import DAYS, load_year
 from nmmc.model.forecast3 import Q3Config
 from nmmc.model.q2 import KAPPA, NU_END
+from nmmc.report.plot.q2 import ForecastQuality
+from nmmc.report.plot.q3 import (CostWaterfall, EpochsLadder, FusionWeights,
+                                 Q2Q3Delta, RevisionDemo, RevisionHeatmap)
 from nmmc.report.q2 import WARMUP_DAYS
 from nmmc.report.q3 import (TEMPLATE, AggregateCsv, DetailsCsv, Result3Xlsx,
                             SummaryMd, metrics_row, summarize)
@@ -80,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="按 {0}/{0,6}/{0,6,12}/{0,6,12,18} 逐级滚动并汇总 ladder.csv")
     parser.add_argument("--jobs", type=int, default=1,
                         help="并行进程数（grid/ladder 模式）")
+    parser.add_argument("--q2-details", type=Path,
+                        default=Q2Q3Delta.DEFAULT_Q2,
+                        help="题2 明细 CSV（q3_vs_q2 费用差图的数据源）")
     return parser
 
 
@@ -195,6 +201,8 @@ def main(argv: list[str] | None = None) -> None:
             prev = row["z_online"]
         path = AggregateCsv("ladder.csv", rows).export(args.output_dir)
         print(f"阶梯表: {path}")
+        fig = EpochsLadder(rows).export(args.output_dir)
+        print(f"已导出 {fig}")
         return
 
     print(f"配置 {label}，ν^end = {args.nu_end:g}，κ = {KAPPA:g}，"
@@ -223,10 +231,19 @@ def main(argv: list[str] | None = None) -> None:
           f"{summary['弃电率'] * 100:.2f}%")
 
     out_dir = args.output_dir / label
-    for path in (Result3Xlsx(args.template).export(days, year, day1.p, out_dir),
-                 DetailsCsv().export(days, year, day1.p, out_dir),
-                 SummaryMd(label, summary).export(days, year, day1.p,
-                                                  out_dir)):
+    exports = (
+        Result3Xlsx(args.template).export(days, year, day1.p, out_dir),
+        DetailsCsv().export(days, year, day1.p, out_dir),
+        SummaryMd(label, summary).export(days, year, day1.p, out_dir),
+        RevisionDemo().export(days, year, day1.p, out_dir),
+        CostWaterfall().export(days, year, day1.p, out_dir),
+        FusionWeights().export(year, fc, out_dir),
+        ForecastQuality(prefix="q3", subject="问题 3").export(
+            days, year, day1.p, out_dir),
+        RevisionHeatmap().export(days, year, day1.p, out_dir),
+        Q2Q3Delta(args.q2_details).export(days, year, day1.p, out_dir),
+    )
+    for path in exports:
         print(f"已导出 {path}")
 
 

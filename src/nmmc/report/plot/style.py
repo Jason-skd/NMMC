@@ -8,7 +8,9 @@
     ν（储能边际价值）借水青 dash-dot——与 g 不同图出现，无混淆；
     u（紧急购电）用 serious 深红 #9b2226——与 L 红不同图出现；
     状态矩阵 / 状态带的"闲"态用 GRID 灰作中性底（等同背景，非类别槽）；
-    洋红槽自 #e87ba4 重校为 #b92fc0（与 L 红的正常视觉 ΔE ≥ 20，dataviz 六检通过）。
+    洋红槽自 #e87ba4 重校为 #b92fc0（与 L 红的正常视觉 ΔE ≥ 20，dataviz 六检通过）；
+    q3 起引入极性语言：上调/正差 = 红（借 L 槽，L 不同图）、下调/负差 = 蓝
+    （借 p 槽，p 线不同图）——红↔蓝 protan ΔE 21.6，可作无缝隙像元编码。
 """
 from pathlib import Path
 
@@ -17,6 +19,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import patheffects
+from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
 from nmmc.model.lp import T
@@ -154,6 +158,84 @@ def month_axis(ax, dates: np.ndarray, n: int, *, on_y: bool = False) -> None:
         ax.set_xticks(idx)
         ax.set_xticklabels(labels)
         ax.set_xlim(0, n)
+
+
+def block_lines(ax) -> None:
+    """修订块边界：τ_m = 6/12/18 h 竖虚线（0/24 为轴缘不画）。"""
+    for h in (6.0, 12.0, 18.0):
+        ax.axvline(h, color=BASE, lw=1, ls="--", zorder=1)
+
+
+def waterfall(ax, labels: list[str], values: list[float],
+              fmt="{:,.2f}".format) -> list[float]:
+    """瀑布图底座：首末柱为总量（INK2），中间柱为增量（正 = 红 /
+    负 = 蓝，极性配色），柱间虚线连接器 + 柱顶数值直接标注。
+
+    Args:
+        ax: 目标子图（y 轴单位由调用方设置）。
+        labels: 各柱 x 标签（可含换行）。
+        values: 首柱 = 起始总量、末柱 = 最终总量、中间 = 带符号增量。
+        fmt: 柱顶数值格式化（缺省千分位两位小数）。
+
+    Returns:
+        各柱之后的累计值（连接器高度序列，供调用方续画）。
+    """
+    x = np.arange(len(values))
+    running, cum, tops = 0.0, [], []
+    for i, val in enumerate(values):
+        total = i in (0, len(values) - 1)
+        if total:
+            ax.bar(x[i], val, 0.6, color=INK2)
+            running = val
+            top = val
+        else:
+            bottom = running if val >= 0 else running + val
+            ax.bar(x[i], abs(val), 0.6, bottom=bottom,
+                   color=C_LOAD if val >= 0 else C_PRICE)
+            top = max(running, running + val)
+            running += val
+        txt = fmt(val) if total else (("+" if val >= 0 else "−")
+                                      + fmt(abs(val)))
+        ax.text(x[i], top, txt, ha="center", va="bottom", fontsize=9,
+                color=INK2)
+        cum.append(running)
+        tops.append(top)
+    for i in range(len(values) - 1):
+        ax.plot([x[i] + 0.3, x[i + 1] - 0.3], [cum[i], cum[i]],
+                color=BASE, lw=1, ls="--", zorder=1)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    return cum
+
+
+def state_matrix(ax, code: np.ndarray, dates: np.ndarray, colors: list[str],
+                 *, warmup: int = 0) -> None:
+    """状态矩阵底座：无缝隙像元 imshow + 暖机分线（白描边标注）+
+    月首纵轴 + 时刻横轴。像元配色由调用方给出（须过 CVD 校验）。
+
+    Args:
+        ax: 目标子图（调用方先 style_ax 再调本函数关网格）。
+        code: 状态编码矩阵，shape (天数, 144)，值 0..len(colors)−1。
+        dates: datetime64 日数组（月首刻度）。
+        colors: 各状态像元色（"闲"等中性态放 GRID 灰）。
+        warmup: 暖机天数；0 表示不画分线。
+    """
+    n = len(code)
+    ax.imshow(code, aspect="auto", interpolation="nearest",
+              cmap=ListedColormap(colors), vmin=0, vmax=len(colors) - 1,
+              extent=(0.0, 24.0, float(n), 0.0))
+    ax.grid(False)
+    ax.set_xticks(np.arange(0, 25, 4))
+    ax.set_xlim(0, 24)
+    ax.set_xlabel("时刻（h）", fontsize=9, color=INK2)
+    month_axis(ax, dates, n, on_y=True)
+    if warmup:
+        stroke = [patheffects.withStroke(linewidth=2.5, foreground=SURFACE)]
+        ax.axhline(warmup, color=INK2, lw=1)
+        ax.text(0.4, warmup - 0.4, "暖机期", fontsize=8, color=INK2,
+                va="bottom", path_effects=stroke)
+        ax.text(0.4, warmup + 0.6, "报告期", fontsize=8, color=INK2,
+                va="top", path_effects=stroke)
 
 
 def save(fig, out_dir: Path, name: str, *, tight: bool = False) -> Path:
