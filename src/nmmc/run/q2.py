@@ -17,11 +17,13 @@ from nmmc.data.year import YearData
 from nmmc.model.forecast import (ForecastConfig, build_scenarios, forecast_load,
                                  forecast_pv, reference_path)
 from nmmc.model.lp import ETA, T
-from nmmc.model.q2 import (KAPPA, NU_END, solve_planning, solve_recourse,
-                           solve_stochastic_step)
+from nmmc.model.q2 import (KAPPA, NU_END, emergency_cap, solve_planning,
+                           solve_recourse, solve_stochastic_step)
 
 S0_INIT = 6000.0  # 2025.1.1 0:00 储电量，全年 SOC 链的锚（文档 §2.2）
 ALPHA_RT = 0.65   # 确定性等价对照的参考路径分位（v4 交付参数，文档 §7.3）
+CAP_TOL = 1e-6    # 规划层 u 上界不动点判据 ‖Δg‖₁/Σg（文档 §6.1）
+CAP_MAX = 12      # 序列线性化轮数上限（防振荡不收敛；命中即如实报告）
 
 
 @dataclass
@@ -39,6 +41,9 @@ class DayResult:
         z_ce: 确定性等价 MPC 的现金费用（同 g、同日初 SOC，消融对照）。
         z_expost: 事后最优补救的现金费用（同 g、同真路径），元。
         z_pi: 完美信息的现金费用，元。
+        cap_resid: 规划层 u 上界序列线性化的末轮残差 ‖Δg‖₁/Σg（自检
+            C16）；旧口径（无上界）恒为 0。
+        cap_iters: 序列线性化实际轮数；命中 CAP_MAX 即该日未收敛到不动点。
     """
 
     j: int
@@ -55,6 +60,8 @@ class DayResult:
     z_ce: float
     z_expost: float
     z_pi: float
+    cap_resid: float = 0.0
+    cap_iters: int = 0
 
 
 def cash_cost(p: np.ndarray, g: np.ndarray, u: np.ndarray,
@@ -63,11 +70,59 @@ def cash_cost(p: np.ndarray, g: np.ndarray, u: np.ndarray,
     return float(p @ g + kappa * (p @ u))
 
 
+def solve_plan(p: np.ndarray, scn: np.ndarray, probs: np.ndarray, s0: float,
+               nu_end: float, kappa: float, emerg_cap: bool,
+               tol: float = CAP_TOL,
+               max_passes: int = CAP_MAX) -> tuple[np.ndarray,
+                                                   np.ndarray | None,
+                                                   float, int]:
+    """日前规划：新口径下带 u 上界，迭代至不动点（文档 §6.1）。
+
+    上界 (n^s − g)⁺ 依赖第一阶段决策 g，作为 g 的上界约束非凸，故规划层
+    不是单个 LP。按序列线性化处理：第 0 轮解无上界 LP 得 g⁰（= v5 口径），
+    第 k 轮用 cap = (n^s − g^{k−1})⁺ 重解，每轮仍是纯 LP、亚秒级。
+
+    **收敛判据**：迭代到 ‖g^k − g^{k−1}‖₁/Σg ≤ tol 即认定不动点——此时
+    g 对自己诱导的上界最优，模型自洽。⚠️ 不能用固定轮数：实测 2025-09-10
+    这类日子 2 轮时残差仍有 1.4×10⁻²，且续算到不动点使当日交付费用下降
+    约 1300 元（2.9%）。序列非单调，不得在中间迭代里"挑最好的 Z̃"——不同
+    轮次的可行域不同，只有不动点这一个自洽点。max_passes 命中即视为未收敛，
+    如实报告（自检 C16）。
+
+    Args:
+        p: 逐时段电价，shape (144,)。
+        scn: 净负荷情景，shape (N_s, 144)。
+        probs: 情景概率。
+        s0: 当日 0:00 储电量。
+        nu_end / kappa: 末端估值 / 紧急倍率。
+        emerg_cap: True 用新口径（带上界），False 退回 v5 无上界。
+        tol: 不动点判据。
+        max_passes: 轮数上限。
+
+    Returns:
+        (g, u_cap, resid, iters)：计划购电量；情景上界（旧口径为 None）；
+        末轮残差；实际轮数（旧口径为 0.0 / 0）。
+    """
+    plan = solve_planning(p, scn, probs, s0, nu_end, kappa)
+    if not emerg_cap:
+        return plan.g, None, 0.0, 0
+    resid, k = 0.0, 0
+    for k in range(1, max_passes + 1):
+        prev = plan.g
+        plan = solve_planning(p, scn, probs, s0, nu_end, kappa,
+                              emergency_cap(scn, prev))
+        resid = float(np.abs(plan.g - prev).sum()
+                      / max(float(plan.g.sum()), 1e-9))
+        if resid <= tol:
+            break
+    return plan.g, emergency_cap(scn, plan.g), resid, k
+
+
 def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
-                ref: np.ndarray, nu_end: float,
-                kappa: float = KAPPA) -> tuple[np.ndarray, np.ndarray,
-                                               np.ndarray, np.ndarray,
-                                               np.ndarray]:
+                ref: np.ndarray, nu_end: float, kappa: float = KAPPA,
+                emerg_cap: bool = True) -> tuple[np.ndarray, np.ndarray,
+                                                 np.ndarray, np.ndarray,
+                                                 np.ndarray]:
     """确定性等价 MPC 执行全天：未来压成单条参考路径（消融对照，§7.3）。
 
     当前时段用真值 n_t，未来时段用参考路径 ref。
@@ -79,6 +134,8 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
         s0: 当日 0:00 储电量。
         ref: α^rt 分位参考路径，shape (144,)。
         nu_end / kappa: 末端估值 / 紧急倍率。
+        emerg_cap: True 给 u 加"只补缺口"上界（与交付臂同口径，保证执行
+            层消融只差未来表示），False 退回 v5 无上界。
 
     Returns:
         (c, d, u, w, S)：MPC 真实路径，S shape (145,)。
@@ -91,7 +148,8 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
     s[0] = s0
     for t in range(T):
         tail = np.concatenate([net[t:t + 1], ref[t + 1:]])
-        sol = solve_recourse(p[t:], tail, g[t:], s[t], nu_end, kappa)
+        cap = emergency_cap(tail, g[t:]) if emerg_cap else None
+        sol = solve_recourse(p[t:], tail, g[t:], s[t], nu_end, kappa, cap)
         c_t, d_t = sol.c[0], sol.d[0]
         u[t], w[t] = sol.u[0], sol.w[0]
         if c_t > 0.0 and d_t > 0.0:
@@ -108,10 +166,12 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
 
 def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
                  scn: np.ndarray, probs: np.ndarray, s0: float,
-                 nu_end: float,
-                 kappa: float = KAPPA) -> tuple[np.ndarray, np.ndarray,
-                                                np.ndarray, np.ndarray,
-                                                np.ndarray]:
+                 nu_end: float, kappa: float = KAPPA,
+                 u_cap: np.ndarray | None = None) -> tuple[np.ndarray,
+                                                           np.ndarray,
+                                                           np.ndarray,
+                                                           np.ndarray,
+                                                           np.ndarray]:
     """在线随机 MPC 执行全天（交付，文档 §7.2）。
 
     逐时段解"当步共享 + 剩余时域按 0:00 情景分支"的两阶段 LP，
@@ -127,6 +187,7 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         probs: 情景概率 π_s，shape (N_s,)。
         s0: 当日 0:00 储电量。
         nu_end / kappa: 末端估值 / 紧急倍率。
+        u_cap: 情景紧急购电上界 (N_s, 144)，None 为 v5 无上界口径。
 
     Returns:
         (c, d, u, w, S)：随机 MPC 真实路径，S shape (145,)。
@@ -139,7 +200,7 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     s[0] = s0
     for t in range(T):
         step = solve_stochastic_step(p, net, g, scn, probs, t, s[t],
-                                     nu_end, kappa)
+                                     nu_end, kappa, u_cap)
         c_t, d_t = step.c, step.d
         u[t], w[t] = step.u, step.w
         if c_t > 0.0 and d_t > 0.0:
@@ -157,8 +218,8 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
 def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
             typ_r: np.ndarray, cfg: ForecastConfig, nu_end: float = NU_END,
             kappa: float = KAPPA, alpha_rt: float = ALPHA_RT,
-            policy: str = "smpc",
-            days: int | None = None) -> list[DayResult]:
+            policy: str = "smpc", days: int | None = None,
+            emerg_cap: bool = True) -> list[DayResult]:
     """全年诚实回测（文档 §9）：预报 → SAA 规划 → 执行层 → SOC 链推进。
 
     Args:
@@ -172,6 +233,10 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
             等价（§7.3，消融口径）。无论交付为何，另一档执行层始终在
             同一 g、同日初 SOC 上加跑并记入 z / z_ce，保证机制归因干净。
         days: 只滚动前 N 天（含暖机）；缺省全年 365。
+        emerg_cap: 紧急购电口径。True（v6 默认，交付）= 加"只补缺口"
+            上界 u ≤ (n−g)⁺（文档 §5.1，假设 A6′），四条臂（交付 / CE /
+            事后 / PI）同口径；False = v5 旧口径（u 无上界），保留作
+            "口径消融"对照，用于量化合规成本。
 
     Returns:
         逐日结果列表（长度 = min(days, 365)），暖机期也完整包含。
@@ -190,26 +255,32 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
         r_hat = forecast_pv(cfg, year, j, typ_r)
         scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
         probs = np.full(len(scn), 1.0 / len(scn))
-        plan = solve_planning(p, scn, probs, soc, nu_end, kappa)
+        g, u_cap, resid, iters = solve_plan(p, scn, probs, soc, nu_end,
+                                            kappa, emerg_cap)
         ref = reference_path(scn, alpha_rt)
         net = year.ell[j] - year.r[j]
         if policy == "smpc":
-            c, d, u, w, s = run_smpc_day(p, net, plan.g, scn, probs, soc,
-                                         nu_end, kappa)
-            ce_u = run_mpc_day(p, net, plan.g, soc, ref, nu_end, kappa)[2]
+            c, d, u, w, s = run_smpc_day(p, net, g, scn, probs, soc,
+                                         nu_end, kappa, u_cap)
+            ce_u = run_mpc_day(p, net, g, soc, ref, nu_end, kappa,
+                               emerg_cap)[2]
         else:
-            c, d, u, w, s = run_mpc_day(p, net, plan.g, soc, ref, nu_end,
-                                        kappa)
+            c, d, u, w, s = run_mpc_day(p, net, g, soc, ref, nu_end,
+                                        kappa, emerg_cap)
             ce_u = u
-        expost = solve_recourse(p, net, plan.g, soc, nu_end, kappa)
-        pi = solve_planning(p, net[None, :], np.ones(1), soc, nu_end, kappa)
-        pi_u = solve_recourse(p, net, pi.g, soc, nu_end, kappa).u
+        cap_path = emergency_cap(net, g) if emerg_cap else None
+        expost = solve_recourse(p, net, g, soc, nu_end, kappa, cap_path)
+        pi_g, _, _, _ = solve_plan(p, net[None, :], np.ones(1), soc, nu_end,
+                                   kappa, emerg_cap)
+        pi_cap = emergency_cap(net, pi_g) if emerg_cap else None
+        pi_u = solve_recourse(p, net, pi_g, soc, nu_end, kappa, pi_cap).u
         out.append(DayResult(
-            j=j, g=plan.g, ell_hat=ell_hat, r_hat=r_hat, ns=len(scn),
-            c=c, d=d, u=u, w=w, S=s, z=cash_cost(p, plan.g, u, kappa),
-            z_ce=cash_cost(p, plan.g, ce_u, kappa),
-            z_expost=cash_cost(p, plan.g, expost.u, kappa),
-            z_pi=cash_cost(p, pi.g, pi_u, kappa)))
+            j=j, g=g, ell_hat=ell_hat, r_hat=r_hat, ns=len(scn),
+            c=c, d=d, u=u, w=w, S=s, z=cash_cost(p, g, u, kappa),
+            z_ce=cash_cost(p, g, ce_u, kappa),
+            z_expost=cash_cost(p, g, expost.u, kappa),
+            z_pi=cash_cost(p, pi_g, pi_u, kappa), cap_resid=resid,
+            cap_iters=iters))
         soc = s[T]
         fcasts.append((ell_hat, r_hat))
         if (j + 1) % 31 == 0:

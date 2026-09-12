@@ -49,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="确定性等价 MPC 的参考路径分位 α^rt")
     parser.add_argument("--nu-end", type=float, default=NU_END,
                         help="日末储电量估值 ν^end")
+    parser.add_argument("--no-emerg-cap", action="store_true",
+                        help="口径消融：去掉 u ≤ (n−g)⁺ 上界，退回 v5 无上界"
+                             "口径（紧急购电可当 5 倍价采购通道用）")
     parser.add_argument("--seed", type=int, default=0, help="随机种子")
     parser.add_argument("--days", type=int, default=DAYS,
                         help="滚动天数（含暖机期）")
@@ -66,14 +69,18 @@ def main(argv: list[str] | None = None) -> None:
     year = load_year(args.input)
     cfg = ForecastConfig(load=args.load, pv=args.pv, resid=args.resid,
                          ns=args.ns, seed=args.seed)
+    emerg_cap = not args.no_emerg_cap
     label = f"{cfg.load}-{cfg.pv}-{cfg.resid}-{args.policy}"
     if args.policy == "mpc":
         label += f"-a{args.alpha_rt:g}"
+    if not emerg_cap:
+        label += "-nocap"
     print(f"配置 {label}，ν^end = {args.nu_end:g}，κ = {KAPPA:g}，"
+          f"紧急购电口径 {'u ≤ (n−g)⁺' if emerg_cap else '无上界（v5）'}，"
           f"滚动 {args.days} 天（暖机 {WARMUP_DAYS} 天）")
     days = rollout(year, day1.p, day1.ell, day1.r, cfg,
                    nu_end=args.nu_end, alpha_rt=args.alpha_rt,
-                   policy=args.policy, days=args.days)
+                   policy=args.policy, days=args.days, emerg_cap=emerg_cap)
 
     summary = summarize(days, year, day1.p)
     print("== 费用分层（报告期）==")
@@ -82,7 +89,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  {key}: {summary[key]:,.2f} 元")
     print("== 自检 ==")
     for key in ("C6 对账残差 max", "C7 能量守恒残差 max", "C8 max(c·d)",
-                "C8 max(u·w)", "性质8 u∧c 时段数", "C9 序关系违例天数"):
+                "C8 max(u·w)", "性质8 u∧c 时段数", "C9 序关系违例天数",
+                "C16 上界收敛残差 max", "C16 序列线性化轮数 max",
+                "C16 未收敛天数"):
         print(f"  {key}: {summary[key]}")
     print("== 紧急购电 ==")
     print(f"  天数 {summary['紧急购电天数']}/{summary['天数']}，"
@@ -97,10 +106,12 @@ def main(argv: list[str] | None = None) -> None:
           f"光伏盈余时段 {summary['紧急购电盈余时段占比'] * 100:.2f}%")
     print(f"  归因：① {summary['归因①功率强制占比'] * 100:.2f}% / "
           f"② {summary['归因②储能耗尽占比'] * 100:.2f}% / "
-          f"③ {summary['归因③有电不放占比'] * 100:.2f}% / "
+          f"③a囤电 {summary['归因③a囤电型占比'] * 100:.2f}% / "
+          f"③b配给 {summary['归因③b配给型占比'] * 100:.2f}% / "
           f"④ {summary['归因④低水位带占比'] * 100:.2f}%")
     print("== C14 归因健康度 ==")
-    for key in ("C14 ③为少数", "C14 峰段高于谷段", "C14 盈余近零"):
+    for key in ("C14a 囤电型近零", "C14b 峰段高于谷段", "C14c 盈余近零",
+                "C14d 无紧急购电同时充电"):
         print(f"  {key}: {'过' if summary[key] else '不过'}")
 
     out_dir = args.output_dir / label

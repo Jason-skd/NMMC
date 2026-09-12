@@ -266,3 +266,7 @@ $RECYCLE.BIN/
 
 tmp/
 temp/
+
+### 实验脚本产物
+experiments/**/out/
+*.npz

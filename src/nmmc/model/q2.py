@@ -24,6 +24,25 @@ KAPPA = 5.0    # 紧急购电倍率
 NU_END = 0.472  # 日末储电量估值锚，元/kWh（文档 §2.3）
 
 
+def emergency_cap(net: np.ndarray, g: np.ndarray) -> np.ndarray:
+    """紧急购电"只补缺口"上界 u_t ≤ (n_t − g_t)⁺（文档 §5.1，假设 A6′）。
+
+    题面语义：紧急购电是断供兜底，按实际缺口计量，不是 5 倍价的采购
+    窗口。给定已锁定的 g，该上界是常数，模型仍为纯 LP；并且它**等价于**
+    禁止"紧急购电同时充电"（性质 8′）：由平衡式 u = (n−g) + c + w − d 与
+    充放互斥 c·d = 0，u ≤ (n−g)⁺ 蕴含 u·c = 0。恒可行性不变（性质 1 的
+    构造 c = d = 0、u = (n−g)⁺、w = (g−n)⁺ 恰好落在上界上）。
+
+    Args:
+        net: 净负荷路径 n（真值或情景），kWh。
+        g: 已锁定的计划购电量，与 net 同形。
+
+    Returns:
+        逐时段上界 (n−g)⁺，与 net 同形。
+    """
+    return np.maximum(net - g, 0.0)
+
+
 @dataclass
 class PlanResult:
     """日前两阶段场景 LP 最优解。
@@ -56,8 +75,8 @@ class PathResult:
 
 
 def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
-                   s0: float, nu_end: float,
-                   kappa: float) -> PlanResult:
+                   s0: float, nu_end: float, kappa: float,
+                   u_cap: np.ndarray | None = None) -> PlanResult:
     """解日前两阶段场景 LP（文档 §6）。
 
     Args:
@@ -67,6 +86,8 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         s0: 当日 0:00 储电量（给定状态）。
         nu_end: 日末储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        u_cap: 情景紧急购电上界，shape (N_s, 144)；None 为 v5 旧口径
+            （无上界）。上界依赖 g，由调用方按序列线性化给定（§6.1）。
 
     Returns:
         PlanResult: 计划购电量 g 与规划目标值 Z̃。
@@ -117,6 +138,8 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         lo[o_s:o_s + T + 1] = S_MIN
         hi[o_s:o_s + T + 1] = S_MAX
         lo[o_s] = hi[o_s] = s0
+        if u_cap is not None:
+            hi[o_u:o_u + T] = u_cap[s]
 
     # 求解；Z̃ = obj @ x（含虚拟记账项，非现金费用）
     x, _, _ = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
@@ -124,8 +147,8 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
 
 
 def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
-                   s_start: float, nu_end: float,
-                   kappa: float) -> PathResult:
+                   s_start: float, nu_end: float, kappa: float,
+                   u_cap: np.ndarray | None = None) -> PathResult:
     """解单路径补救 LP：min κΣp·u − ν·S_end（文档 §7.3 模板）。
 
     g 为已锁定的参数（移到平衡式右端），S_0 锚定 s_start。事后最优传
@@ -138,6 +161,8 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         s_start: 锚定储电量。
         nu_end: 日末（或时域末端）储电量估值。
         kappa: 紧急购电倍率 κ。
+        u_cap: 紧急购电上界（与 net 等长），None 为 v5 旧口径（无上界）；
+            新口径取 emergency_cap(net, g)。
 
     Returns:
         PathResult: 补救量、储电量轨迹与目标值。
@@ -162,6 +187,8 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     lo[o_s:o_s + n_t + 1] = S_MIN
     hi[o_s:o_s + n_t + 1] = S_MAX
     lo[o_s] = hi[o_s] = s_start
+    if u_cap is not None:
+        hi[o_u:o_u + n_t] = u_cap
 
     # 平衡：d + u − c − w = n − g（g 已锁定，移右端）
     tt = np.arange(n_t)
@@ -202,8 +229,8 @@ class StepResult:
 
 def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
                           scn: np.ndarray, probs: np.ndarray, t: int,
-                          s_prev: float, nu_end: float,
-                          kappa: float) -> StepResult:
+                          s_prev: float, nu_end: float, kappa: float,
+                          u_cap: np.ndarray | None = None) -> StepResult:
     """解在线随机 MPC 的单步两阶段 LP（文档 §7.2）。
 
     第一阶段（here-and-now）：当步 (c,d,u,w) 与 S_{t+1} 全情景共享，
@@ -223,6 +250,9 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         s_prev: 真实储电量 S_t（时段初）。
         nu_end: 时域末端储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        u_cap: 情景紧急购电上界，shape (N_s, 144)，None 为 v5 旧口径。
+            当步上界按**真值**口径取 (n_t − g_t)⁺（当步净负荷已实现，
+            与情景无关）；剩余时域第 s 块取 u_cap[s, t+1:]。
 
     Returns:
         StepResult: 当步决策与步进目标值。S_{t+1} 由执行层按真实递推
@@ -233,6 +263,7 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         出现即为实现错误）。
     """
     m = T - 1 - t
+    cap_now = np.inf if u_cap is None else max(net[t] - g[t], 0.0)
     if m == 0:
         # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（C15）
         # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t − ν·S_{t+1}
@@ -243,9 +274,9 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         vals = [np.array([1.0, 1.0, -1.0, -1.0]),
                 np.array([1.0, -ETA, 1.0 / ETA])]
         b = np.array([net[t] - g[t], s_prev])
-        # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S_MIN ≤ S_{t+1} ≤ S_MAX
+        # 变量域：0 ≤ c,d ≤ E_MAX_PER；0 ≤ u ≤ cap；w ≥ 0；S ∈ [S_MIN,S_MAX]
         lo = np.array([0.0, 0.0, 0.0, 0.0, S_MIN])
-        hi = np.array([E_MAX_PER, E_MAX_PER, np.inf, np.inf, S_MAX])
+        hi = np.array([E_MAX_PER, E_MAX_PER, cap_now, np.inf, S_MAX])
         x, _, z = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
         return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
                           w=float(x[3]), obj=z)
@@ -260,6 +291,7 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
     hi[0] = hi[1] = E_MAX_PER                # 当步 c / d 功率上限
+    hi[2] = cap_now                          # 当步紧急购电上界（真值口径）
     lo[4] = S_MIN                            # 共享 S_{t+1}
     hi[4] = S_MAX
     # 当步平衡 d+u−c−w = n_t−g_t 与 SOC 递推 S_{t+1}−ηc+d/η = S_t
@@ -281,6 +313,8 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         hi[o_d:o_d + m] = E_MAX_PER
         lo[o_s:o_s + m + 1] = S_MIN
         hi[o_s:o_s + m + 1] = S_MAX
+        if u_cap is not None:
+            hi[o_u:o_u + m] = u_cap[s, t + 1:]
         # 情景块锚定：S^s[0] = S_{t+1}
         r0 = 2 + s * (2 * m + 1)
         rows.append(np.array([r0, r0]))
