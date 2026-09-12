@@ -5,11 +5,16 @@
 F_0^(j)（截至昨日的实际值 + 日历）；随机性固定种子。样本不足时用可得
 样本，完全无样本（day 0）退化为附件 1 典型日先验，残差为 0 时场景退化
 N_s=1（保守暖机的最简实现）。
+
+题4 扩展：build_scenarios 接受可选电价输入时返回 (nets, prices) 二元组
+——价格残差 ε^P 与 (ε^L, ε^R) 取自同一历史日整条贴加（三元联合，题4 档
+§4.2），prices 为 None 时即常数价口径（题2，逐位不变）。
 """
 from dataclasses import dataclass
 
 import numpy as np
 
+from nmmc.data.price import YearPrice
 from nmmc.data.year import YearData
 from nmmc.model.lp import T
 
@@ -96,17 +101,20 @@ def forecast_load(cfg: ForecastConfig, year: YearData, j: int,
 
     # L3：对数线性回归总量 × 近窗归一化形态
     if cfg.load == "L3":
+        shape = hist[-cfg.shape_win:].mean(axis=0)
         return _load_regression(cfg, hist, year.dow[:he], year.doy[:he],
-                                year.dow[j], year.doy[j])
+                                year.dow[j], year.doy[j], shape)
     raise ValueError(f"未知负载候选: {cfg.load}")
 
 
 def _load_regression(cfg: ForecastConfig, hist: np.ndarray,
                      dow: np.ndarray, doy: np.ndarray,
-                     dow_j: int, doy_j: float) -> np.ndarray:
+                     dow_j: int, doy_j: float,
+                     shape: np.ndarray) -> np.ndarray:
     """L3：全历史日总量对数线性回归（星期哑变量 + 年谐波同场），点预报 =
-    预测总量 × 近窗归一化形态（文档 §3.1）。样本不足参数个数时退化为
-    全历史同点均值。"""
+    预测总量 × 归一化形态（文档 §3.1；形态由调用方给定——交付为近窗
+    W_sh 均值，零参数变体为同周几全历史均值）。样本不足参数个数时退化
+    为全历史同点均值。"""
     y = hist.sum(axis=1)
     n_par = 7 + 2 * cfg.harm_order
 
@@ -122,8 +130,7 @@ def _load_regression(cfg: ForecastConfig, hist: np.ndarray,
     row = _dow_harm_design(dow_j, doy_j, cfg.harm_order)[0]
     total = float(np.exp(row @ beta))
 
-    # 点预报 ℓ̂ = ŷ × s，s = 近窗形态（Σ_t s_t = 1）
-    shape = hist[-cfg.shape_win:].mean(axis=0)
+    # 点预报 ℓ̂ = ŷ × s，s = 归一化形态（Σ_t s_t = 1）
     return total * shape / shape.sum()
 
 
@@ -193,20 +200,23 @@ def forecast_pv(cfg: ForecastConfig, year: YearData, j: int,
 
     # P3：日总量一阶年谐波 × 近窗归一化形态
     if cfg.pv == "P3":
-        return _pv_harmonic(cfg, hist, year.doy[:he], year.doy[j])
+        shape = hist[-cfg.shape_win:].mean(axis=0)
+        return _pv_harmonic(cfg, hist, year.doy[:he], year.doy[j], shape)
     raise ValueError(f"未知光伏候选: {cfg.pv}")
 
 
 def _pv_harmonic(cfg: ForecastConfig, hist: np.ndarray,
-                 doy: np.ndarray, doy_j: float) -> np.ndarray:
-    """P3：日总量一阶年谐波最小二乘，点预报 = 预测总量 × 近窗归一化形态
-    （文档 §3.2）。拟合样本不足 3 个时退化为近窗均值。"""
+                 doy: np.ndarray, doy_j: float,
+                 shape: np.ndarray) -> np.ndarray:
+    """P3：日总量一阶年谐波最小二乘，点预报 = 预测总量 × 归一化形态
+    （文档 §3.2；形态由调用方给定——交付为近窗 W_sh 均值，零参数变体
+    为全历史均值）。拟合样本不足 3 个时退化为该形态。"""
     sub = hist[-cfg.pv_fit_window:] if cfg.pv_fit_window else hist
     y = sub.sum(axis=1)
 
-    # 拟合样本不足 3 个：退化为近窗均值
+    # 拟合样本不足 3 个：退化为调用方形态
     if len(sub) < 3:
-        return hist[-cfg.shape_win:].mean(axis=0)
+        return shape
 
     # 一阶年谐波回归：log y = a + b·cos(2π·doy/365) + c·sin(2π·doy/365)
     ang = 2.0 * np.pi * doy[-len(sub):] / 365.0
@@ -216,19 +226,63 @@ def _pv_harmonic(cfg: ForecastConfig, hist: np.ndarray,
     # 总量预测与形态：r̂ = ŷ × s（Σ_t s_t = 1；形态塌缩时均匀铺开）
     ang_j = 2.0 * np.pi * doy_j / 365.0
     total = float(np.exp(np.array([1.0, np.cos(ang_j), np.sin(ang_j)]) @ beta))
-    shape = hist[-cfg.shape_win:].mean(axis=0)
     ssum = shape.sum()
     return total * shape / ssum if ssum > 1e-9 else np.full(T, total / T)
+
+
+def pool_days(cfg: ForecastConfig, j: int,
+              rng: np.random.Generator) -> np.ndarray:
+    """残差池日索引：R1 近 resid_window 日带放回抽 ns 条 / R2 近窗 12 全取。
+
+    day 0 无残差样本，返回空数组（场景退化 N_s = 1 由调用侧处理）。
+    """
+    if j == 0:
+        return np.empty(0, dtype=int)
+    if cfg.resid == "R1":
+        return rng.choice(np.arange(max(0, j - cfg.resid_window), j),
+                          size=cfg.ns, replace=True)
+    if cfg.resid == "R2":
+        return np.arange(max(0, j - 12), j)
+    raise ValueError(f"未知残差配置: {cfg.resid}")
+
+
+def load_pv_residuals(year: YearData,
+                      fcasts: list[tuple[np.ndarray, np.ndarray]],
+                      i: int) -> tuple[np.ndarray, np.ndarray]:
+    """第 i 日伪样本外残差：ε^L = ℓ − ℓ̂（加性）、ε^R = (r − r̂)/max(r̂, r_ε)（相对）。"""
+    ell_i, r_i = fcasts[int(i)]
+    return (year.ell[i] - ell_i,
+            (year.r[i] - r_i) / np.maximum(r_i, R_EPS))
+
+
+def attach(ell_hat: np.ndarray, r_hat: np.ndarray, eps_l: np.ndarray,
+           eps_r: np.ndarray) -> np.ndarray:
+    """残差贴加：ℓ^(s) = [ℓ̂+ε^L]_+，r^(s) = [r̂(1+ε^R)]_+，返回净负荷。"""
+    return (np.maximum(ell_hat + eps_l, 0.0)
+            - np.maximum(r_hat * (1.0 + eps_r), 0.0))
+
+
+def price_residual(price: YearPrice, p_fcasts: list[np.ndarray],
+                   i: int) -> np.ndarray:
+    """第 i 日电价伪样本外相对残差 ε^P = (p − p̂)/p̂（题4 档 §4.2）。
+
+    p̂ > 0 恒成立（附件4 无非正值、预报为正均值），无需防除零。
+    """
+    return (price.p[i] - p_fcasts[i]) / p_fcasts[i]
 
 
 def build_scenarios(cfg: ForecastConfig, year: YearData,
                     fcasts: list[tuple[np.ndarray, np.ndarray]], j: int,
                     ell_hat: np.ndarray, r_hat: np.ndarray,
-                    rng: np.random.Generator) -> np.ndarray:
+                    rng: np.random.Generator, *, price: YearPrice | None = None,
+                    p_fcasts: list[np.ndarray] | None = None,
+                    p_hat: np.ndarray | None = None
+                    ) -> tuple[np.ndarray, np.ndarray | None]:
     """残差场景族（文档 §3.3）：把伪样本外残差日曲线整条贴到当日点预报。
 
-    残差定义：负载加性 ε^L = ℓ − ℓ̂；光伏相对 ε^R = (r − r̂)/max(r̂, r_ε)。
     贴加约定：ℓ^(s) = [ℓ̂ + ε^L]_+，r^(s) = [r̂(1 + ε^R)]_+，等权。
+    给定价格输入时同日贴加电价段 ε^P（三元联合，题4 档 §4.2）：
+    p^(s) = [p̂(1 + ε^P)]_+，(ε^L, ε^R, ε^P) 取自同一历史日。
 
     Args:
         cfg: 预报层配置。
@@ -237,32 +291,31 @@ def build_scenarios(cfg: ForecastConfig, year: YearData,
         j: 0 基日索引。
         ell_hat / r_hat: 当日点预报。
         rng: 固定种子的随机源（R1 抽样）。
+        price: 附件4 全年实现电价（价格残差真值源；题4 口径）。
+        p_fcasts: 历史各日当时的电价点预报 p̂_i（与 fcasts 同步滚动）。
+        p_hat: 当日电价点预报。
 
     Returns:
-        净负荷场景 n^(s)，shape (N_s, 144)。
+        (nets, prices)：净负荷场景 n^(s)，shape (N_s, 144)；电价场景
+        p^(s)，常数价口径（未给价格输入）为 None。
     """
     # day 0 无残差样本：场景退化 N_s = 1（点预报本身）
-    if j == 0:
-        return (ell_hat - r_hat)[None, :]
+    days = pool_days(cfg, j, rng)
+    if not len(days):
+        prices = None if p_hat is None else p_hat[None, :].copy()
+        return (ell_hat - r_hat)[None, :], prices
 
-    # 残差池：R1 近 28 日带放回抽 ns 条 / R2 近窗 12 全取
-    if cfg.resid == "R1":
-        pool = np.arange(max(0, j - cfg.resid_window), j)
-        days = rng.choice(pool, size=cfg.ns, replace=True)
-    elif cfg.resid == "R2":
-        days = np.arange(max(0, j - 12), j)
-    else:
-        raise ValueError(f"未知残差配置: {cfg.resid}")
     nets = np.empty((len(days), T))
+    prices = (np.empty((len(days), T))
+              if p_hat is not None else None)
     for row, i in enumerate(days):
-        # 残差：ε^L = ℓ − ℓ̂（加性）；ε^R = (r − r̂)/max(r̂, r_ε)（相对）
-        ell_i, r_i = fcasts[int(i)]
-        eps_l = year.ell[i] - ell_i
-        eps_r = (year.r[i] - r_i) / np.maximum(r_i, R_EPS)
-        # 贴加：ℓ^(s) = [ℓ̂+ε^L]_+，r^(s) = [r̂(1+ε^R)]_+，n^(s) = ℓ^(s) − r^(s)
-        nets[row] = (np.maximum(ell_hat + eps_l, 0.0)
-                     - np.maximum(r_hat * (1.0 + eps_r), 0.0))
-    return nets
+        eps_l, eps_r = load_pv_residuals(year, fcasts, int(i))
+        nets[row] = attach(ell_hat, r_hat, eps_l, eps_r)
+        if prices is not None:
+            # 三元联合：ε^P 与 (ε^L, ε^R) 同日整条贴加（题4 档 §4.2）
+            eps_p = price_residual(price, p_fcasts, int(i))
+            prices[row] = np.maximum(p_hat * (1.0 + eps_p), 0.0)
+    return nets, prices
 
 
 def reference_path(scn: np.ndarray, alpha: float) -> np.ndarray:

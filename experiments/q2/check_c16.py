@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
     for k in range(max(js.values()) + 1):
         ell_hat = forecast_load(cfg, year, k, d1.ell)
         r_hat = forecast_pv(cfg, year, k, d1.r)
-        scn = build_scenarios(cfg, year, fcasts, k, ell_hat, r_hat, rng)
+        scn, _ = build_scenarios(cfg, year, fcasts, k, ell_hat, r_hat, rng)
         if k in js.values():
             scns[k] = scn
         fcasts.append((ell_hat, r_hat))

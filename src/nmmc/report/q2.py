@@ -16,17 +16,17 @@ from nmmc.data import ATTACH
 from nmmc.data.year import YearData
 from nmmc.model.lp import E_MAX_PER, ETA, S_MIN, T
 from nmmc.model.q2 import KAPPA
-from nmmc.report.common import PAPER_SLOTS, md_table, segment_label
+from nmmc.report.common import (EPS_EMERG, PAPER_SLOTS, md_table,
+                                py_date, write_battery_sheet,
+                                write_emergency_sheet)
 from nmmc.run.q2 import CAP_TOL, DayResult
 
 TEMPLATE = ATTACH / "附件5" / "result2.xlsx"
 WARMUP_DAYS = 31      # 1.1–1.31 暖机期，完整模拟但不交付（文档 §1）
-EPS_EMERG = 1e-6      # 紧急购电报表阈值，kWh
 SOC_RICH = 3000.0     # 归因③"有电不放"的水位判据，kWh（文档 §7.6）
 SOC_EPS = 1e-6        # 归因②"储能耗尽"的容差，kWh
 PRICE_BANDS = (("谷", 0.0, 0.5), ("平", 0.5, 1.0), ("峰", 1.0, np.inf))
 PAPER_DATES = ("2025-03-20", "2025-06-21", "2025-09-23", "2025-12-21")
-BLOCK_LABELS = [f"{4 * k}:00-{4 * (k + 1)}:00" for k in range(6)]
 ATTR_LABELS = {1: "①功率强制", 2: "②储能耗尽", 3: "③a囤电型",
                4: "③b配给型", 5: "④低水位带"}
 
@@ -34,32 +34,6 @@ ATTR_LABELS = {1: "①功率强制", 2: "②储能耗尽", 3: "③a囤电型",
 def report_days(days: list[DayResult]) -> list[DayResult]:
     """报告期切片：j ≥ 31（文档 §1，暖机期不交付）。"""
     return [d for d in days if d.j >= WARMUP_DAYS]
-
-
-def emergency_segments(u: np.ndarray,
-                       eps: float = EPS_EMERG) -> list[tuple[int, int, float]]:
-    """紧急购电极大连续段：u_t > ε 的 [i_a, i_b]（0 基含端点）与段内合计。
-
-    Args:
-        u: 真实路径紧急购电量，shape (144,)。
-        eps: 报表阈值，kWh。
-
-    Returns:
-        [(i_a, i_b, Σu)] 列表；无断供日为空。
-    """
-    on = u > eps
-    out = []
-    i = 0
-    while i < len(u):
-        if not on[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < len(u) and on[j + 1]:
-            j += 1
-        out.append((i, j, float(u[i:j + 1].sum())))
-        i = j + 1
-    return out
 
 
 def attribute_emergency(u: np.ndarray, S: np.ndarray, net: np.ndarray,
@@ -234,8 +208,8 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray) -> dict:
 
 
 def _py_date(day: DayResult, year: YearData) -> dt.date:
-    """DayResult 的 0 基日索引转 Python 日期。"""
-    return year.dates[day.j].astype(object)
+    """DayResult 的 0 基日索引转 Python 日期（common.py 的便捷包装）。"""
+    return py_date(day.j, year)
 
 
 class Result2Xlsx:
@@ -260,33 +234,8 @@ class Result2Xlsx:
                 ws.cell(row=row, column=2 + t, value=float(val))
             ws.cell(row=row, column=146, value=float(day.g.sum()))
             ws.cell(row=row, column=147, value=float(day.z))
-        ws = wb["充放电量"]
-        ws.delete_rows(2, ws.max_row - 1)
-        for day in rep:
-            row = ws.max_row + 1
-            for k in range(6):
-                seg = slice(24 * k, 24 * (k + 1))
-                ws.cell(row=row + k, column=2, value=BLOCK_LABELS[k])
-                ws.cell(row=row + k, column=3,
-                        value=float(ETA * day.c[seg].sum()))
-                ws.cell(row=row + k, column=4,
-                        value=float(day.d[seg].sum() / ETA))
-            ws.cell(row=row, column=1, value=_py_date(day, year))
-            ws.cell(row=row, column=5, value=dt.time(0, 0))
-            ws.cell(row=row, column=6, value=float(day.S[0]))
-            ws.cell(row=row + 1, column=5, value="24:00")
-            ws.cell(row=row + 1, column=6, value=float(day.S[T]))
-        ws = wb["紧急购电量"]
-        ws.delete_rows(2, ws.max_row - 1)
-        for day in rep:
-            segs = emergency_segments(day.u)
-            row = ws.max_row + 1
-            for k, (i_a, i_b, e) in enumerate(segs):
-                ws.cell(row=row + k, column=2,
-                        value=segment_label(i_a, i_b))
-                ws.cell(row=row + k, column=3, value=e)
-            if segs:
-                ws.cell(row=row, column=1, value=_py_date(day, year))
+        write_battery_sheet(wb["充放电量"], rep, year)
+        write_emergency_sheet(wb["紧急购电量"], rep, year)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "result2.xlsx"
         wb.save(path)

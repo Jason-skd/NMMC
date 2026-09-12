@@ -9,7 +9,7 @@ MPC——逐时段以真实 SOC 重锚、当步用真值净负荷、剩余时域
 事后最优与完美信息为两个诊断下界（§7.4/§7.5）。全年滚动按 §9
 诚实回测协议：跨日唯一反馈是真实路径 S_144 与当日实际值。
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -120,15 +120,16 @@ def solve_plan(p: np.ndarray, scn: np.ndarray, probs: np.ndarray, s0: float,
 
 def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
                 ref: np.ndarray, nu_end: float, kappa: float = KAPPA,
-                emerg_cap: bool = True) -> tuple[np.ndarray, np.ndarray,
-                                                 np.ndarray, np.ndarray,
-                                                 np.ndarray]:
+                emerg_cap: bool = True,
+                p_fut: np.ndarray | None = None
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+                           np.ndarray]:
     """确定性等价 MPC 执行全天：未来压成单条参考路径（消融对照，§7.3）。
 
     当前时段用真值 n_t，未来时段用参考路径 ref。
 
     Args:
-        p: 逐时段电价，shape (144,)。
+        p: 当步计价电价，shape (144,)（题4 读法 R 下为当日实现价）。
         net: 当日真实净负荷，shape (144,)。
         g: 已锁定的计划购电量，shape (144,)。
         s0: 当日 0:00 储电量。
@@ -136,6 +137,8 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
         nu_end / kappa: 末端估值 / 紧急倍率。
         emerg_cap: True 给 u 加"只补缺口"上界（与交付臂同口径，保证执行
             层消融只差未来表示），False 退回 v5 无上界。
+        p_fut: CE 对照臂的未来价格视图（题4：τ > t 段用情景均值折叠价，
+            "把分布换成其均值"的确定性等价口径）；None 即全时域用 p。
 
     Returns:
         (c, d, u, w, S)：MPC 真实路径，S shape (145,)。
@@ -149,7 +152,9 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
     for t in range(T):
         tail = np.concatenate([net[t:t + 1], ref[t + 1:]])
         cap = emergency_cap(tail, g[t:]) if emerg_cap else None
-        sol = solve_recourse(p[t:], tail, g[t:], s[t], nu_end, kappa, cap)
+        p_t = (p[t:] if p_fut is None
+               else np.concatenate([p[t:t + 1], p_fut[t + 1:]]))
+        sol = solve_recourse(p_t, tail, g[t:], s[t], nu_end, kappa, cap)
         c_t, d_t = sol.c[0], sol.d[0]
         u[t], w[t] = sol.u[0], sol.w[0]
         if c_t > 0.0 and d_t > 0.0:
@@ -167,11 +172,10 @@ def run_mpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray, s0: float,
 def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
                  scn: np.ndarray, probs: np.ndarray, s0: float,
                  nu_end: float, kappa: float = KAPPA,
-                 u_cap: np.ndarray | None = None) -> tuple[np.ndarray,
-                                                           np.ndarray,
-                                                           np.ndarray,
-                                                           np.ndarray,
-                                                           np.ndarray]:
+                 u_cap: np.ndarray | None = None,
+                 p_scn: np.ndarray | None = None
+                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+                            np.ndarray]:
     """在线随机 MPC 执行全天（交付，文档 §7.2）。
 
     逐时段解"当步共享 + 剩余时域按 0:00 情景分支"的两阶段 LP，
@@ -180,7 +184,8 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     折算，而非按必然发生。
 
     Args:
-        p: 逐时段电价，shape (144,)。
+        p: 当步计价电价，shape (144,)（题4 读法 R 下为当日实现价——
+            交易时刻可见，用于当期紧急购电定价，题4 档 §7）。
         net: 当日真实净负荷，shape (144,)。
         g: 已锁定的计划购电量，shape (144,)。
         scn: 0:00 净负荷情景，shape (N_s, 144)。
@@ -188,6 +193,8 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         s0: 当日 0:00 储电量。
         nu_end / kappa: 末端估值 / 紧急倍率。
         u_cap: 情景紧急购电上界 (N_s, 144)，None 为 v5 无上界口径。
+        p_scn: 0:00 情景电价 p^(s)（题4 未来分支用，τ > t）；None 即
+            常数价口径（题2，全时域用 p）。
 
     Returns:
         (c, d, u, w, S)：随机 MPC 真实路径，S shape (145,)。
@@ -200,7 +207,7 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     s[0] = s0
     for t in range(T):
         step = solve_stochastic_step(p, net, g, scn, probs, t, s[t],
-                                     nu_end, kappa, u_cap)
+                                     nu_end, kappa, u_cap, p_scn)
         c_t, d_t = step.c, step.d
         u[t], w[t] = step.u, step.w
         if c_t > 0.0 and d_t > 0.0:
@@ -218,7 +225,9 @@ def run_smpc_day(p: np.ndarray, net: np.ndarray, g: np.ndarray,
 def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
             typ_r: np.ndarray, cfg: ForecastConfig, nu_end: float = NU_END,
             kappa: float = KAPPA, alpha_rt: float = ALPHA_RT,
-            policy: str = "smpc", days: int | None = None,
+            policy: str = "smpc",
+            win_schedule: tuple[np.ndarray, np.ndarray] | None = None,
+            days: int | None = None,
             emerg_cap: bool = True) -> list[DayResult]:
     """全年诚实回测（文档 §9）：预报 → SAA 规划 → 执行层 → SOC 链推进。
 
@@ -233,6 +242,9 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
         policy: 交付执行层，"smpc" 在线随机 MPC（§7.2）/"mpc" 确定性
             等价（§7.3，消融口径）。无论交付为何，另一档执行层始终在
             同一 g、同日初 SOC 上加跑并记入 z / z_ce，保证机制归因干净。
+        win_schedule: 逐日选窗 (w_l, w_r) 数组对（去超参实验，issue #6），
+            第 j 日用 replace(cfg, load_lags=w_l[j], pv_window=w_r[j])；
+            None = 固定 cfg 常数窗（交付口径）。
         days: 只滚动前 N 天（含暖机）；缺省全年 365。
         emerg_cap: 紧急购电口径。True（v6 默认，交付）= 加"只补缺口"
             上界 u ≤ (n−g)⁺（文档 §5.1，假设 A6′），四条臂（交付 / CE /
@@ -255,9 +267,13 @@ def rollout(year: YearData, p: np.ndarray, typ_ell: np.ndarray,
         # 逐日末端估值（V2b 换装）：数组按日取值，常数原样透传
         nu_j = (float(nu_end[j])
                 if isinstance(nu_end, (np.ndarray, list, tuple)) else nu_end)
+        # 逐日选窗（去超参实验）：按日替换 W_L/W_R，其余配置不动
+        if win_schedule is not None:
+            cfg = replace(cfg, load_lags=int(win_schedule[0][j]),
+                          pv_window=int(win_schedule[1][j]))
         ell_hat = forecast_load(cfg, year, j, typ_ell)
         r_hat = forecast_pv(cfg, year, j, typ_r)
-        scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
+        scn, _ = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
         probs = np.full(len(scn), 1.0 / len(scn))
         g, u_cap, resid, iters = solve_plan(p, scn, probs, soc, nu_j,
                                             kappa, emerg_cap)

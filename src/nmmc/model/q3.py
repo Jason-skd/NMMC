@@ -55,11 +55,13 @@ class StageResult:
 
 def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | None,
                 scn: np.ndarray, probs: np.ndarray, m: int, s_anchor: float,
-                nu_end: float, kappa: float) -> StageResult:
+                nu_end: float, kappa: float,
+                p_scn: np.ndarray | None = None) -> StageResult:
     """解阶段 m 两阶段场景 LP（文档 §7.1）。
 
     Args:
-        p: 逐时段电价，元/kWh，shape (144,)。
+        p: 一阶段计价电价（本块承诺 a(B_m) 与共享 δ± 的期望计价按性质 2
+            折叠为 p̂ = Σπ_s p^(s)；题4 档 §6.2），元/kWh，shape (144,)。
         g: 0:00 计划购电量（计费基准）；m=0 时为 None（g 是本阶段决策）。
         committed: m≥1 时的已承诺注入前缀（[0, 6τ_m) 段有效）；m=0 为 None。
         scn: 净负荷场景 n^(s)，kWh，shape (N_s, 144)（已实现前缀为真值）。
@@ -68,6 +70,9 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         s_anchor: 当前真实储电量（SOC 重锚，文档 §5.4）。
         nu_end: 日末储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        p_scn: 情景电价 p^(s)，shape (N_s, 144)——更晚块试探 a^(s)、δ±(s)
+            与紧急项 u^(s) 均为情景相关量、不可折叠、逐情景计价（性质 2）；
+            None 即常数价口径（题3 / 读法 D / 附件1 退化，逐位不变）。
 
     Returns:
         StageResult: 本块承诺、逐情景试探注入与规划目标值。
@@ -145,9 +150,10 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
                 cols += [o_af + tf, o_dpf + tf, o_dmf + tf]
                 vals += [np.ones(n_free), -np.ones(n_free), np.ones(n_free)]
                 b += list(g[fe:])
-            obj[o_af:o_af + n_free] = pi * p[fe:]
-            obj[o_dpf:o_dpf + n_free] = pi * 0.5 * p[fe:]
-            obj[o_dmf:o_dmf + n_free] = pi * 0.5 * p[fe:]
+            p_fut = p[fe:] if p_scn is None else p_scn[s, fe:]
+            obj[o_af:o_af + n_free] = pi * p_fut
+            obj[o_dpf:o_dpf + n_free] = pi * 0.5 * p_fut
+            obj[o_dmf:o_dmf + n_free] = pi * 0.5 * p_fut
             row += n_free
         # 供需平衡：注入 + d + u − c − w = n（注入 = hn 或 af）
         tt = np.arange(nh)
@@ -178,9 +184,10 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         vals += soc_vals
         b += [0.0] * nh
         row += nh
-        # 情景物理边界与目标：π_s·κΣp·u^(s) − π_s·ν·S_end；
+        # 情景物理边界与目标：π_s·κΣp^(s)·u^(s) − π_s·ν·S_end；
         # 0 ≤ c,d ≤ E_MAX_PER；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_anchor
-        obj[o_u:o_u + nh] = pi * kappa * p[h0:]
+        obj[o_u:o_u + nh] = pi * kappa * (p[h0:] if p_scn is None
+                                          else p_scn[s, h0:])
         obj[o_st + nh] = -pi * nu_end
         hi[o_c:o_c + nh] = E_MAX_PER
         hi[o_d:o_d + nh] = E_MAX_PER
@@ -207,7 +214,7 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
 def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                free_mask: np.ndarray, g: np.ndarray, scn: np.ndarray,
                probs: np.ndarray, t: int, s_prev: float, nu_end: float,
-               kappa: float) -> StepResult:
+               kappa: float, p_scn: np.ndarray | None = None) -> StepResult:
     """解内环在线随机 MPC 的单步两阶段 LP（文档 §8，交付）。
 
     第一阶段（here-and-now）：当步 (c,d,u,w) 与 S_{t+1} 全情景共享，
@@ -220,7 +227,8 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     （继承题2 档 C15：否则求解器对"放电后弃掉"无差异，末段白弃电）。
 
     Args:
-        p: 逐时段电价，元/kWh，shape (144,)。
+        p: 当步计价电价——题4 读法 R 下为当日实现价 p_t^(j)（交易时刻
+            可见），元/kWh，shape (144,)。
         net: 当日真实净负荷，kWh，shape (144,)。
         committed: 各时段已承诺注入（free_mask 为 True 处取值被忽略）。
         free_mask: 未锁定时段掩码，shape (144,)。
@@ -231,6 +239,8 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         s_prev: 真实储电量 S_t（时段初）。
         nu_end: 时域末端储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        p_scn: 未来分支的情景电价 p^(s)（τ > t 段，题4 档 §7）；None 即
+            常数价口径（题3，各情景用 p）。
 
     Returns:
         StepResult: 当步决策与步进目标值。S_{t+1} 由执行层按真实递推
@@ -293,12 +303,14 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         o_d, o_u = o_c + m, o_c + 2 * m
         o_w, o_st = o_c + 3 * m, o_c + 4 * m
         pi = float(probs[s])
-        # 情景目标：π_s[Σ_free p·(af + ½δ) + κΣ p·u^s − ν·S^s_end]；
+        # 情景目标：π_s[Σ_free p^(s)·(af + ½δ) + κΣ p^(s)·u^s − ν·S^s_end]；
         # 变量域同题2 模板：0 ≤ c^s,d^s ≤ E_MAX_PER；S^s ∈ [S_MIN, S_MAX]
-        obj[o_af:o_af + n_ff] = pi * p[fut[ff]]
-        obj[o_dpf:o_dpf + n_ff] = pi * 0.5 * p[fut[ff]]
-        obj[o_dmf:o_dmf + n_ff] = pi * 0.5 * p[fut[ff]]
-        obj[o_u:o_u + m] = pi * kappa * p[t + 1:]
+        p_free = (p[fut[ff]] if p_scn is None else p_scn[s, fut[ff]])
+        obj[o_af:o_af + n_ff] = pi * p_free
+        obj[o_dpf:o_dpf + n_ff] = pi * 0.5 * p_free
+        obj[o_dmf:o_dmf + n_ff] = pi * 0.5 * p_free
+        obj[o_u:o_u + m] = pi * kappa * (p[t + 1:] if p_scn is None
+                                         else p_scn[s, t + 1:])
         obj[o_st + m] = -pi * nu_end
         hi[o_c:o_c + m] = E_MAX_PER
         hi[o_d:o_d + m] = E_MAX_PER

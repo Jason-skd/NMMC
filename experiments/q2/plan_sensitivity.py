@@ -73,8 +73,9 @@ def main(argv: list[str] | None = None) -> None:
     for j in range(args.days):
         ell_hat = forecast_load(cfg, year, j, d1.ell)
         r_hat = forecast_pv(cfg, year, j, d1.r)
-        scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat,
-                              rng) + args.bump
+        scn, _ = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat,
+                                 rng)
+        scn = scn + args.bump
         probs = np.full(len(scn), 1.0 / len(scn))
         g, u_cap, _, _ = solve_plan(p, scn, probs, soc, args.nu_end, KAPPA,
                                     emerg_cap)

@@ -17,17 +17,17 @@ from nmmc.data.year import YearData
 from nmmc.model.lp import ETA, T
 from nmmc.model.q2 import KAPPA
 from nmmc.model.q3 import beta_check
-from nmmc.report.common import PAPER_SLOTS, md_table, segment_label
-from nmmc.report.q2 import (BLOCK_LABELS, EPS_EMERG, PAPER_DATES,
-                            WARMUP_DAYS, emergency_segments, report_days)
+from nmmc.report.common import (BLOCK_LABELS, PAPER_SLOTS, md_table, py_date,
+                                write_battery_sheet, write_emergency_sheet)
+from nmmc.report.q2 import EPS_EMERG, PAPER_DATES, WARMUP_DAYS, report_days
 from nmmc.run.q3 import DayResult
 
 TEMPLATE = ATTACH / "附件5" / "result3.xlsx"
 
 
 def _py_date(day: DayResult, year: YearData) -> dt.date:
-    """DayResult 的 0 基日索引转 Python 日期。"""
-    return year.dates[day.j].astype(object)
+    """DayResult 的 0 基日索引转 Python 日期（common.py 的便捷包装）。"""
+    return py_date(day.j, year)
 
 
 def day_checks(day: DayResult, year: YearData) -> dict[str, float | int]:
@@ -191,33 +191,8 @@ class Result3Xlsx:
                     ws.cell(row=r, column=2 + t, value=float(val))
                 ws.cell(row=r, column=146, value=float(row.sum()))
                 ws.cell(row=r, column=147, value=float(fee[i]))
-        ws = wb["充放电量"]
-        ws.delete_rows(2, ws.max_row - 1)
-        for day in rep:
-            row = ws.max_row + 1
-            for k in range(6):
-                seg = slice(24 * k, 24 * (k + 1))
-                ws.cell(row=row + k, column=2, value=BLOCK_LABELS[k])
-                ws.cell(row=row + k, column=3,
-                        value=float(ETA * day.c[seg].sum()))
-                ws.cell(row=row + k, column=4,
-                        value=float(day.d[seg].sum() / ETA))
-            ws.cell(row=row, column=1, value=_py_date(day, year))
-            ws.cell(row=row, column=5, value=dt.time(0, 0))
-            ws.cell(row=row, column=6, value=float(day.S[0]))
-            ws.cell(row=row + 1, column=5, value="24:00")
-            ws.cell(row=row + 1, column=6, value=float(day.S[T]))
-        ws = wb["紧急购电量"]
-        ws.delete_rows(2, ws.max_row - 1)
-        for day in rep:
-            segs = emergency_segments(day.u)
-            row = ws.max_row + 1
-            for k, (i_a, i_b, e) in enumerate(segs):
-                ws.cell(row=row + k, column=2,
-                        value=segment_label(i_a, i_b))
-                ws.cell(row=row + k, column=3, value=e)
-            if segs:
-                ws.cell(row=row, column=1, value=_py_date(day, year))
+        write_battery_sheet(wb["充放电量"], rep, year)
+        write_emergency_sheet(wb["紧急购电量"], rep, year)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "result3.xlsx"
         wb.save(path)

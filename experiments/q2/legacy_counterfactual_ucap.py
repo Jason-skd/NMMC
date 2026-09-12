@@ -116,7 +116,7 @@ rows_out = []
 for j in range(DAYS):
     ell_hat = forecast_load(cfg, year, j, d1.ell)
     r_hat = forecast_pv(cfg, year, j, d1.r)
-    scn = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
+    scn, _ = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat, rng)
     probs = np.full(len(scn), 1.0 / len(scn))
     # 规划层：情景内 u 只能补该情景的计划缺口
     g = plan_capped(p, scn, probs, soc, NU_END, KAPPA,

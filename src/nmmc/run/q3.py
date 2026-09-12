@@ -64,7 +64,8 @@ def run_mpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                     g: np.ndarray, ref: np.ndarray, c: np.ndarray,
                     d: np.ndarray, u: np.ndarray, w: np.ndarray,
                     s: np.ndarray, h0: int, h1: int, nu_end: float,
-                    kappa: float, free_from: int | None = None) -> None:
+                    kappa: float, free_from: int | None = None,
+                    p_fut: np.ndarray | None = None) -> None:
     """确定性等价 MPC（CE 对照臂）：就地执行本块时段 [h0, h1)。
 
     与交付臂 run_smpc_segment 只差未来表示：当前时段用真值 net，未来
@@ -85,6 +86,8 @@ def run_mpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         h0 / h1: 本块起止时段（0 基，左闭右开）。
         nu_end / kappa: 末端估值 / 紧急倍率。
         free_from: 注入解锁（退回内部变量）的首时段；缺省 h1。
+        p_fut: CE 对照臂的未来价格视图（题4：τ > t 段用情景均值折叠价）；
+            None 即全时域用 p。
     """
     free_from = h1 if free_from is None else free_from
     for t in range(h0, h1):
@@ -92,7 +95,9 @@ def run_mpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         free = slots >= free_from
         comm = np.where(free, 0.0, committed[slots])
         tail_net = np.concatenate([net[t:t + 1], ref[t + 1:]])
-        c_t, d_t, u_t, w_t, _ = solve_tail(p[t:], tail_net, comm, free,
+        p_t = (p[t:] if p_fut is None
+               else np.concatenate([p[t:t + 1], p_fut[t + 1:]]))
+        c_t, d_t, u_t, w_t, _ = solve_tail(p_t, tail_net, comm, free,
                                            g[t:], s[t], nu_end, kappa)
         if c_t[0] > 0.0 and d_t[0] > 0.0:
             # 性质 3 同款：HiGHS 可能返回 c·d>0 的等价最优顶点，按非等量
@@ -110,7 +115,8 @@ def run_smpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                      c: np.ndarray, d: np.ndarray, u: np.ndarray,
                      w: np.ndarray, s: np.ndarray, h0: int, h1: int,
                      nu_end: float, kappa: float,
-                     free_from: int | None = None) -> None:
+                     free_from: int | None = None,
+                     p_scn: np.ndarray | None = None) -> None:
     """内环在线随机 MPC（交付）：就地执行本块时段 [h0, h1)。
 
     逐时段解 solve_step——当步 here-and-now 共享、剩余时域按当前阶段
@@ -132,12 +138,14 @@ def run_smpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         h0 / h1: 本块起止时段（0 基，左闭右开）。
         nu_end / kappa: 末端估值 / 紧急倍率。
         free_from: 注入解锁（退回内部变量）的首时段；缺省 h1。
+        p_scn: 当前阶段情景电价 p^(s)（题4 未来分支用，τ > t）；None 即
+            常数价口径（题3，全时域用 p）。
     """
     free_from = h1 if free_from is None else free_from
     free_mask = np.arange(T) >= free_from
     for t in range(h0, h1):
         step = solve_step(p, net, committed, free_mask, g, scn, probs, t,
-                          s[t], nu_end, kappa)
+                          s[t], nu_end, kappa, p_scn)
         c_t, d_t = step.c, step.d
         u[t], w[t] = step.u, step.w
         if c_t > 0.0 and d_t > 0.0:
@@ -215,7 +223,8 @@ def rollout(year: YearData, fc: YearForecast, p: np.ndarray,
             r_hat = pv_point(cfg, year, fc, j, m, typ_r, weights)
             ell_hat = ell0 if m == 0 else load_point(cfg, ell0, year, j, m)
             stage_fcasts.append((ell_hat, r_hat))
-            scn = build_scenarios(cfg, year, hist, j, m, ell_hat, r_hat, rng)
+            scn, _ = build_scenarios(cfg, year, hist, j, m, ell_hat, r_hat,
+                                     rng)
             probs = np.full(len(scn), 1.0 / len(scn))
             if m in exercised:
                 res = solve_stage(p, g, committed, scn, probs, m, s[h0],
