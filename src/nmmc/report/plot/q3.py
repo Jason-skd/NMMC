@@ -47,8 +47,9 @@ class EpochsLadder:
     def __init__(self, rows: list[dict]):
         self.rows = rows
 
-    def export(self, out_dir: Path) -> Path:
-        """渲染阶梯图并返回 PNG 路径。"""
+    def export(self, out_dir: Path,
+               name: str = "q3_epochs_ladder.png") -> Path:
+        """渲染阶梯图并返回 PNG 路径（name 供论文编号 fig18 复用）。"""
         x = np.arange(len(self.rows))
         z = np.array([r["z_online"] for r in self.rows]) / 1e4
         zpi = np.array([r["z_pi"] for r in self.rows]) / 1e4
@@ -77,7 +78,7 @@ class EpochsLadder:
         fig.suptitle("问题 3 修订机制逐级阶梯（每档独立全年回测）",
                      fontsize=13, color=INK)
         fig.tight_layout(rect=(0, 0, 1, 0.92))
-        return save(fig, out_dir, "q3_epochs_ladder.png", tight=True)
+        return save(fig, out_dir, name, tight=True)
 
 
 class RevisionDemo:

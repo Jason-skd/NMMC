@@ -1,7 +1,8 @@
 """国一论文结果图：从定稿 xlsx / csv / 附件重绘，不依赖滚动轨迹 pickle。
 
 编号与 docs 叙事对齐：fig03–fig08 题 1，fig10–fig13 题 2，
-fig15–fig17 题 3；框架示意图在 schematic 模块。
+fig15–fig18 题 3（fig18 修订阶梯），fig19 / fig21 题 4；
+框架示意图在 schematic 模块。
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from nmmc.model.forecast import ForecastConfig, forecast_load, forecast_pv
 from nmmc.model.forecast3 import hour_powers
 from nmmc.model.lp import ETA, S_MAX, S_MIN
 from nmmc.model.q3 import VINTAGE_HOURS
+from nmmc.report.plot.q3 import EpochsLadder
 from nmmc.report.plot.style import (BAND_LABELS, BASE, C_BUY, C_CH, C_DIS,
                                     C_DUAL, C_EMERG, C_LOAD, C_PRICE, C_PV,
                                     C_SOC, ENDS, GRID, HOURS, INK, INK2, MUTED,
@@ -703,6 +705,94 @@ def fig17_q2q3(q2: pd.DataFrame, q3: pd.DataFrame, year, out_dir: Path):
     return save_paper(fig, out_dir, "fig17_题2与题3费用对照")
 
 
+# ---------------------------------------------------------------------------
+# 题 3 修订阶梯（fig18）与 题 4（fig19 / fig21）：CSV 驱动，不依赖滚动轨迹
+# ---------------------------------------------------------------------------
+
+# 修订阶梯四臂（v7 计划器；前三档为受控回测臂，末档 = 交付臂）
+Q3_LADDER = (
+    ("0", ROOT / "results" / "q3_v7-ladder" / "F1-L1-LU1-S-b-E0"),
+    ("0-6", ROOT / "results" / "q3_v7-ladder" / "F1-L1-LU1-S-b-E0-6"),
+    ("0-6-12", ROOT / "results" / "q3_v7-ladder" / "F1-L1-LU1-S-b-E0-6-12"),
+    ("0-6-12-18", Q3_DIR),
+)
+Q4_42_DIR = ROOT / "results" / "q4" / "4-2"
+
+
+def _zon42(arm: str) -> float:
+    """题 4 计划线某臂全年 Z_online（q4-2_details.csv 逐日求和）。"""
+    return float(pd.read_csv(Q4_42_DIR / arm / "q4-2_details.csv")
+                 .z_online.sum())
+
+
+def fig18_q3_ladder(out_dir: Path):
+    """修订阶梯四档，口径同 experiments/gap/collect.py：各臂 Z = 逐日求和。"""
+    rows = []
+    for epochs, arm in Q3_LADDER:
+        det = pd.read_csv(arm / "q3_details.csv")
+        rows.append({"epochs": epochs,
+                     "z_online": float(det.z_online.sum()),
+                     "z_pi": float(det.z_pi.sum())})
+    # EpochsLadder 走 save()（不做文字碰撞检查），issues 恒空
+    return EpochsLadder(rows).export(out_dir,
+                                     name="fig18_题3修订阶梯.png"), []
+
+
+def fig21_q4_price_ladder(out_dir: Path):
+    """题 4 计划线三笔消融账（相对主交付 PR1-V2-r，读法 R 全年 334 天）。"""
+    main = _zon42("PR1-V2-r")
+    items = [("不建模价格\n（PR0：附件1 常数价）", _zon42("PR0-V2-r") - main),
+             ("常数终端价值\n（V0：ν 恒 0.472）", _zon42("PR1-V0-r") - main),
+             ("读法 D\n（0:00 已知全天实现价）", _zon42("PR1-V2-d") - main)]
+    y = np.arange(len(items))[::-1]
+    vals = np.array([v for _, v in items])
+    fig, ax = plt.subplots(figsize=(7.2, 4.0), dpi=200, facecolor=SURFACE)
+    colors = [C_EMERG if v > 0 else C_BUY for v in vals]
+    ax.barh(y, vals, height=0.55, color=colors, alpha=0.9, zorder=3)
+    for yi, v in zip(y, vals):
+        ax.text(v + (2600 if v > 0 else -2600), yi,
+                f"{v:+,.0f} 元", va="center",
+                ha="left" if v > 0 else "right", fontsize=9.5, color=INK)
+    ax.axvline(0.0, color=INK2, lw=1.2, zorder=2)
+    ax.set_yticks(y, [k for k, _ in items], fontsize=9.5)
+    ax.set_xlim(vals.min() * 1.45, vals.max() * 1.45)
+    style_ax(ax, "相对主交付的全年差额（元）：正 = 更贵，负 = 更省", "消融臂")
+    fig.tight_layout()
+    return save_paper(fig, out_dir, "fig21_题4价格信息阶梯")
+
+
+def fig19_q4_weekday_step(out_dir: Path):
+    """题 4 计划线星期台阶：日末 S144 按次日星期分组（分组同 report/q4.py）。"""
+    df = pd.read_csv(Q4_42_DIR / "PR1-V2-r" / "q4-2_details.csv",
+                     usecols=["date", "S144"])
+    nxt = pd.to_datetime(df.date) + pd.Timedelta(days=1)
+    key = nxt.dt.weekday.map({4: "次日周五", 5: "次日周六",
+                              0: "次日周一"}).fillna("其他")
+    order = ["次日周五", "次日周六", "其他", "次日周一"]
+    groups = [df.loc[key == g, "S144"].to_numpy() for g in order]
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.0), dpi=200, facecolor=SURFACE)
+    bp = ax.boxplot(groups, tick_labels=order, widths=0.5, patch_artist=True,
+                    showmeans=True, meanprops=dict(marker="D", ms=5,
+                                                   mfc=INK, mec=SURFACE),
+                    medianprops=dict(color=INK2, lw=1.2), zorder=3,
+                    flierprops=dict(ms=3, mfc=INK2, mec=INK2, alpha=0.5))
+    for patch in bp["boxes"]:
+        patch.set(facecolor=C_SOC, alpha=0.30, edgecolor=C_SOC)
+    for wh in bp["whiskers"] + bp["caps"]:
+        wh.set(color=INK2, lw=1.0)
+    for i, g in enumerate(groups, start=1):   # 组均值标注（台阶读数）
+        ax.annotate(f"{g.mean():,.0f}", xy=(i, g.mean()), xytext=(14, 2),
+                    textcoords="offset points", fontsize=9, color=INK)
+    ax.axhline(float(df.S144.mean()), color=GRID, lw=1.0, ls="--", zorder=1)
+    style_ax(ax, "计划线日末水位按次日星期分组：次日周五主动清仓",
+             "日末 SOC（kWh）")
+    ax.text(0.99, 0.02, f"虚线 = 全年均值 {df.S144.mean():,.0f} kWh",
+            transform=ax.transAxes, ha="right", fontsize=8.5, color=INK2)
+    fig.tight_layout()
+    return save_paper(fig, out_dir, "fig19_题4日末水位星期台阶")
+
+
 def fig_a2_revision_heat(dates3, g3, a3, year, out_dir: Path):
     """题 3 修订指纹。图面不放标题（题注/文件名承担说明）。"""
     apply_paper_style()
@@ -804,6 +894,9 @@ def render_all(out_dir: Path | None = None) -> Path:
         ("fig16_rev", lambda: fig16_revision(
             year, day1, dates3, g3, a3, bat3, out_dir)),
         ("fig17_q2q3", lambda: fig17_q2q3(daily2, daily3, year, out_dir)),
+        ("fig18_ladder", lambda: fig18_q3_ladder(out_dir)),
+        ("fig19_weekday", lambda: fig19_q4_weekday_step(out_dir)),
+        ("fig21_ablate", lambda: fig21_q4_price_ladder(out_dir)),
         ("figA2_heat", lambda: fig_a2_revision_heat(
             dates3, g3, a3, year, out_dir)),
     ]
