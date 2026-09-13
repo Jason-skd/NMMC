@@ -77,7 +77,8 @@ class PathResult:
 def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
                    s0: float, nu_end: float, kappa: float,
                    u_cap: np.ndarray | None = None,
-                   p_scn: np.ndarray | None = None) -> PlanResult:
+                   p_scn: np.ndarray | None = None,
+                   s_end: float | None = None) -> PlanResult:
     """解日前两阶段场景 LP（文档 §6）。
 
     Args:
@@ -93,6 +94,8 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         p_scn: 情景电价 p^(s)（题4 读法 R），shape (N_s, 144)——紧急项
             不可折叠、逐情景计价（性质 2 推论 2）；None 即常数价口径
             （题2 / 读法 D / 附件1 退化，各情景用 p，逐位不变）。
+        s_end: 若给定，把每情景 S_144 钉在该值（题 3 C3-2：补回昼夜循环
+            S_144=S_0 以退化到题 1）；交付路径恒为 None。
 
     Returns:
         PlanResult: 计划购电量 g 与规划目标值 Z̃。
@@ -143,6 +146,8 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         lo[o_s:o_s + T + 1] = S_MIN
         hi[o_s:o_s + T + 1] = S_MAX
         lo[o_s] = hi[o_s] = s0
+        if s_end is not None:
+            lo[o_s + T] = hi[o_s + T] = s_end
         if u_cap is not None:
             hi[o_u:o_u + T] = u_cap[s]
 

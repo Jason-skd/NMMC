@@ -12,6 +12,7 @@
     uv run prob3 --nu-end 0.6                      # ν^end 敏感性扫描
                                                   # （内环为随机 MPC，无 α^rt；
                                                   #  CE 对照臂固定 0.65 冻结）
+    uv run prob3 --no-emerg-cap                    # 口径消融：退回 v5 无上界
 """
 import argparse
 from concurrent.futures import ProcessPoolExecutor
@@ -77,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="滚动天数（含暖机期）")
     parser.add_argument("--epochs", type=parse_epochs, default=(0, 1, 2, 3),
                         help="行使修订权的时刻（小时，含 0 子集），如 0,6,12")
+    parser.add_argument("--no-emerg-cap", action="store_true",
+                        help="口径消融：去掉 u ≤ (n−a)⁺ 上界，退回 v5 无上界"
+                             "口径（与题 2 --no-emerg-cap 同款）")
     parser.add_argument("--grid", action="store_true",
                         help="跑完 12 组消融（F1/PB0 × LU × S）并汇总 ablation.csv")
     parser.add_argument("--ladder", action="store_true",
@@ -97,6 +101,8 @@ def _config_label(args: argparse.Namespace, epochs: tuple[int, ...],
             f"-{pool or args.pool}")
     if tuple(epochs) != (0, 1, 2, 3):
         base += "-E" + "-".join(str(6 * m) for m in epochs)
+    if getattr(args, "no_emerg_cap", False):
+        base += "-nocap"
     return base
 
 
@@ -112,6 +118,7 @@ def _payload(args: argparse.Namespace, label: str, epochs: tuple[int, ...],
         "load_update": lu or args.load_update, "pool": pool or args.pool,
         "seed": args.seed, "nu_end": args.nu_end,
         "days": args.days, "epochs": list(epochs), "label": label,
+        "emerg_cap": not args.no_emerg_cap,
         "out_dir": str(args.output_dir if out_dir is None else out_dir),
     }
 
@@ -130,7 +137,8 @@ def _run_one(payload: dict) -> dict:
           flush=True)
     days = rollout(year, fc, day1.p, day1.ell, day1.r, cfg,
                    nu_end=payload["nu_end"],
-                   days=payload["days"], epochs=epochs)
+                   days=payload["days"], epochs=epochs,
+                   emerg_cap=payload.get("emerg_cap", True))
     summary = summarize(days, year, day1.p)
     out_dir = Path(payload["out_dir"])
     for path in (Result3Xlsx(Path(payload["template"])).export(
@@ -206,10 +214,12 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     print(f"配置 {label}，ν^end = {args.nu_end:g}，κ = {KAPPA:g}，"
+          f"紧急购电口径 {'u ≤ (n−a)⁺' if not args.no_emerg_cap else '无上界（v5）'}，"
           f"滚动 {args.days} 天（暖机 {WARMUP_DAYS} 天）")
     days = rollout(year, fc, day1.p, day1.ell, day1.r, cfg,
                    nu_end=args.nu_end,
-                   days=args.days, epochs=args.epochs)
+                   days=args.days, epochs=args.epochs,
+                   emerg_cap=not args.no_emerg_cap)
 
     summary = summarize(days, year, day1.p)
     print("== 费用分层（报告期）==")
@@ -223,7 +233,8 @@ def main(argv: list[str] | None = None) -> None:
     print("== 自检 ==")
     for key in ("C3-3 结算式恒等残差", "C3-7 前缀偏差 max",
                 "C6 对账残差 max", "C7 能量守恒残差 max", "C8 max(c·d)",
-                "C8 max(u·w)", "u∧c 时段数", "C9 序关系违例天数"):
+                "C8 max(u·w)", "u∧c 时段数", "C9 序关系违例天数",
+                "C16 上界收敛残差 max", "C16 未收敛天数"):
         print(f"  {key}: {summary[key]}")
     print("== 紧急购电 ==")
     print(f"  天数 {summary['紧急购电天数']}/{summary['天数']}，"

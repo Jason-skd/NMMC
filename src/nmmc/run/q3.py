@@ -19,9 +19,9 @@ from nmmc.model.forecast import (ForecastConfig, forecast_load,
 from nmmc.model.forecast3 import (Q3Config, build_scenarios, fusion_weights,
                                   hour_powers, load_point, pv_point)
 from nmmc.model.lp import ETA, T
-from nmmc.model.q2 import KAPPA, NU_END, solve_planning, solve_recourse
+from nmmc.model.q2 import KAPPA, NU_END, emergency_cap, solve_recourse
 from nmmc.model.q3 import settle_cost, solve_stage, solve_step, solve_tail
-from nmmc.run.q2 import ALPHA_RT, S0_INIT
+from nmmc.run.q2 import ALPHA_RT, CAP_MAX, CAP_TOL, S0_INIT, solve_plan
 
 
 @dataclass
@@ -41,6 +41,9 @@ class DayResult:
             未来压成 α^rt=0.65 分位路径），元——执行层增益 = z_ce − z。
         z_expost: 事后最优补救的现金费用（同 g、a，同真路径），元。
         z_pi: 完美信息（0:00 已知真值）的现金费用，元。
+        cap_resid: 规划层 u 上界序列线性化的末轮残差 ‖Δ‖₁/Σ（自检 C16）；
+            取阶段 0 与 m≥1 各轮的最大残差。无上界口径恒为 0。
+        cap_iters: 序列线性化实际轮数（阶段 0 与各改单阶段的最大轮数）。
     """
 
     j: int
@@ -58,6 +61,50 @@ class DayResult:
     z_ce: float
     z_expost: float
     z_pi: float
+    cap_resid: float = 0.0
+    cap_iters: int = 0
+
+
+def _injection_path(committed: np.ndarray, g: np.ndarray,
+                    free_from: int) -> np.ndarray:
+    """构造上界用的注入路径：已锁定段用 committed，未锁定段用 g 作代理。
+
+    内环无权改 a，锁定段 (n−a)⁺ 是常数；未锁定段 a^(s) 仍是变量，
+    用计费基准 g 作序列线性化的右端代理（与题 2 在 a≡g 时重合）。
+    """
+    inj = committed.copy()
+    if free_from < T:
+        inj[free_from:] = g[free_from:]
+    return inj
+
+
+def solve_stage_iter(p: np.ndarray, g: np.ndarray, committed: np.ndarray,
+                     scn: np.ndarray, probs: np.ndarray, m: int,
+                     s_anchor: float, nu_end: float, kappa: float,
+                     emerg_cap: bool, p_scn: np.ndarray | None = None):
+    """阶段 m≥1 子问题：带 u 上界时序列线性化到不动点（题 2 档 §6.1）。
+
+    Args:
+        p_scn: 情景电价（题4）；None 即常数价口径。
+
+    Returns:
+        (StageResult, resid, iters)
+    """
+    res = solve_stage(p, g, committed, scn, probs, m, s_anchor, nu_end,
+                      kappa, p_scn=p_scn)
+    if not emerg_cap:
+        return res, 0.0, 0
+    resid, k = 0.0, 0
+    for k in range(1, CAP_MAX + 1):
+        prev = res.a_scn
+        res = solve_stage(p, g, committed, scn, probs, m, s_anchor, nu_end,
+                          kappa, p_scn=p_scn,
+                          u_cap=emergency_cap(scn, prev))
+        resid = float(np.abs(res.a_scn - prev).sum()
+                      / max(float(np.abs(prev).sum()), 1e-9))
+        if resid <= CAP_TOL:
+            break
+    return res, resid, k
 
 
 def run_mpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
@@ -65,7 +112,8 @@ def run_mpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                     d: np.ndarray, u: np.ndarray, w: np.ndarray,
                     s: np.ndarray, h0: int, h1: int, nu_end: float,
                     kappa: float, free_from: int | None = None,
-                    p_fut: np.ndarray | None = None) -> None:
+                    p_fut: np.ndarray | None = None,
+                    emerg_cap: bool = False) -> None:
     """确定性等价 MPC（CE 对照臂）：就地执行本块时段 [h0, h1)。
 
     与交付臂 run_smpc_segment 只差未来表示：当前时段用真值 net，未来
@@ -86,19 +134,23 @@ def run_mpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         h0 / h1: 本块起止时段（0 基，左闭右开）。
         nu_end / kappa: 末端估值 / 紧急倍率。
         free_from: 注入解锁（退回内部变量）的首时段；缺省 h1。
-        p_fut: CE 对照臂的未来价格视图（题4：τ > t 段用情景均值折叠价）；
+        p_fut: CE 对照臂的未来价格视图（题4：τ > t 段用折叠价）；
             None 即全时域用 p。
+        emerg_cap: True 给 u 加 (n−a)⁺ 上界。默认 False，避免改变题4
+            现役调用方；题3 交付 rollout 显式传 True。
     """
     free_from = h1 if free_from is None else free_from
+    inj = _injection_path(committed, g, free_from)
     for t in range(h0, h1):
         slots = np.arange(t, T)
         free = slots >= free_from
         comm = np.where(free, 0.0, committed[slots])
         tail_net = np.concatenate([net[t:t + 1], ref[t + 1:]])
+        cap = emergency_cap(tail_net, inj[t:]) if emerg_cap else None
         p_t = (p[t:] if p_fut is None
                else np.concatenate([p[t:t + 1], p_fut[t + 1:]]))
         c_t, d_t, u_t, w_t, _ = solve_tail(p_t, tail_net, comm, free,
-                                           g[t:], s[t], nu_end, kappa)
+                                           g[t:], s[t], nu_end, kappa, cap)
         if c_t[0] > 0.0 and d_t[0] > 0.0:
             # 性质 3 同款：HiGHS 可能返回 c·d>0 的等价最优顶点，按非等量
             # 缩减归一化，SOC 轨迹与费用严格不变（继承 q2 执行层处理）。
@@ -116,7 +168,8 @@ def run_smpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                      w: np.ndarray, s: np.ndarray, h0: int, h1: int,
                      nu_end: float, kappa: float,
                      free_from: int | None = None,
-                     p_scn: np.ndarray | None = None) -> None:
+                     p_scn: np.ndarray | None = None,
+                     emerg_cap: bool = False) -> None:
     """内环在线随机 MPC（交付）：就地执行本块时段 [h0, h1)。
 
     逐时段解 solve_step——当步 here-and-now 共享、剩余时域按当前阶段
@@ -139,13 +192,17 @@ def run_smpc_segment(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         nu_end / kappa: 末端估值 / 紧急倍率。
         free_from: 注入解锁（退回内部变量）的首时段；缺省 h1。
         p_scn: 当前阶段情景电价 p^(s)（题4 未来分支用，τ > t）；None 即
-            常数价口径（题3，全时域用 p）。
+            常数价口径。
+        emerg_cap: True 给 u 加 (n−a)⁺ 上界。默认 False，避免改变题4
+            现役调用方；题3 交付 rollout 显式传 True。
     """
     free_from = h1 if free_from is None else free_from
     free_mask = np.arange(T) >= free_from
+    inj = _injection_path(committed, g, free_from)
+    u_cap = emergency_cap(scn, inj) if emerg_cap else None
     for t in range(h0, h1):
         step = solve_step(p, net, committed, free_mask, g, scn, probs, t,
-                          s[t], nu_end, kappa, p_scn)
+                          s[t], nu_end, kappa, p_scn=p_scn, u_cap=u_cap)
         c_t, d_t = step.c, step.d
         u[t], w[t] = step.u, step.w
         if c_t > 0.0 and d_t > 0.0:
@@ -163,14 +220,16 @@ def rollout(year: YearData, fc: YearForecast, p: np.ndarray,
             typ_ell: np.ndarray, typ_r: np.ndarray, cfg: Q3Config,
             nu_end: float = NU_END, kappa: float = KAPPA,
             days: int | None = None,
-            epochs: tuple[int, ...] = (0, 1, 2, 3)
+            epochs: tuple[int, ...] = (0, 1, 2, 3),
+            emerg_cap: bool = True
             ) -> list[DayResult]:
     """全年诚实回测（文档 §10）：外环四阶段 → 内环随机 MPC（交付）+
     确定性等价 MPC（CE 配对对照，α^rt=0.65 冻结）→ SOC 链推进。
 
-    两臂同日同 g、同 committed、同日初 SOC，只差内环未来表示（情景
-    分布 vs 单条分位路径）；SOC 链按交付臂推进，CE 臂仅供 z_ce 诊断
-    （文档 §12.3 执行层增益 = Z^CE − Z^online 的逐日素材）。
+    阶段 0（0:00）用题 2 两阶段 SAA 定全天计划 g（CF-A）；6/12/18 点
+    解 solve_stage 锁定本块 a。两臂同日同 g、同 committed、同日初 SOC，
+    只差内环未来表示（情景分布 vs 单条分位路径）；SOC 链按交付臂推进，
+    CE 臂仅供 z_ce 诊断。
 
     Args:
         year: 全年数据（按日解锁使用）。
@@ -184,6 +243,9 @@ def rollout(year: YearData, fc: YearForecast, p: np.ndarray,
             逐级增量）。未行使阶段不重解承诺，注入冻结为既有承诺（后续
             块即计划 g）直至下一行使块首；四阶段点预报与场景照常构建
             （信息可得性与 rng 流不随机制改变，跨档可比）。
+        emerg_cap: 紧急购电口径。True（默认，与题 2 v6 同口径）= 加
+            u ≤ (n−a)⁺ 上界，规划层序列线性化到不动点、四条臂同口径；
+            False = v5 无上界，保留作口径消融。
 
     Returns:
         逐日结果列表，暖机期完整包含（报告期切片在 report 层）。
@@ -210,6 +272,7 @@ def rollout(year: YearData, fc: YearForecast, p: np.ndarray,
         stage_fcasts: list[tuple[np.ndarray, np.ndarray]] = []
         z_pi = np.inf
         ns0 = 1
+        cap_resid, cap_iters = 0.0, 0
         c, d, u, w = (np.zeros(T) for _ in range(4))
         s = np.zeros(T + 1)
         s[0] = soc
@@ -223,39 +286,55 @@ def rollout(year: YearData, fc: YearForecast, p: np.ndarray,
             r_hat = pv_point(cfg, year, fc, j, m, typ_r, weights)
             ell_hat = ell0 if m == 0 else load_point(cfg, ell0, year, j, m)
             stage_fcasts.append((ell_hat, r_hat))
-            scn, _ = build_scenarios(cfg, year, hist, j, m, ell_hat, r_hat,
-                                     rng)
+            scn, _ = build_scenarios(cfg, year, hist, j, m, ell_hat, r_hat, rng)
             probs = np.full(len(scn), 1.0 / len(scn))
             if m in exercised:
-                res = solve_stage(p, g, committed, scn, probs, m, s[h0],
-                                  nu_end, kappa)
                 if m == 0:
-                    g = res.commit
+                    # 交付：0:00 用题 2 两阶段 SAA 定 g（CF-A）。改单权只在
+                    # m≥1 兑现，日前 LP 不再把 wait-and-see a^(s) 写进计划。
+                    g, _, resid0, iters0 = solve_plan(
+                        p, scn, probs, s[0], nu_end, kappa, emerg_cap)
+                    committed = g.copy()
                     ns0 = len(scn)
-                    # PI 诊断：0:00 已知真值 ⇒ 确定性全天 LP（题2 模板，无偏差
-                    # 机制——完美信息下 a≡g，一次定准）
-                    pi = solve_planning(p, net[None, :], np.ones(1), s[0],
-                                        nu_end, kappa)
-                    u_pi = solve_recourse(p, net, pi.g, s[0], nu_end,
-                                          kappa).u
-                    z_pi = settle_cost(p, pi.g, pi.g, u_pi, kappa)
-                committed = res.commit
+                    cap_resid, cap_iters = resid0, iters0
+                    # PI 诊断：0:00 已知真值 ⇒ 确定性全天 LP（题2 模板，
+                    # 完美信息下 a≡g，一次定准）
+                    pi_g, _, _, _ = solve_plan(
+                        p, net[None, :], np.ones(1), s[0], nu_end, kappa,
+                        emerg_cap)
+                    pi_cap = (emergency_cap(net, pi_g) if emerg_cap
+                              else None)
+                    u_pi = solve_recourse(p, net, pi_g, s[0], nu_end,
+                                          kappa, pi_cap).u
+                    z_pi = settle_cost(p, pi_g, pi_g, u_pi, kappa)
+                else:
+                    res, resid_m, iters_m = solve_stage_iter(
+                        p, g, committed, scn, probs, m, s[h0], nu_end,
+                        kappa, emerg_cap)
+                    committed = res.commit
+                    if resid_m > cap_resid:
+                        cap_resid = resid_m
+                    cap_iters = max(cap_iters, iters_m)
             # CE 臂参考路径：当前阶段情景的 α^rt 分位（v4 基线，冻结不调）
             ref = reference_path(scn, ALPHA_RT)
             nxt = next((e for e in exercised if e > m), None)
             free_from = T if nxt is None else 36 * nxt
             run_smpc_segment(p, net, committed, g, scn, probs, c, d, u, w,
-                             s, h0, h1, nu_end, kappa, free_from=free_from)
+                             s, h0, h1, nu_end, kappa, free_from=free_from,
+                             emerg_cap=emerg_cap)
             run_mpc_segment(p, net, committed, g, ref, cec, ced, ceu, cew,
-                            ce_s, h0, h1, nu_end, kappa, free_from=free_from)
-        u_exp = solve_recourse(p, net, committed, soc, nu_end, kappa).u
+                            ce_s, h0, h1, nu_end, kappa, free_from=free_from,
+                            emerg_cap=emerg_cap)
+        expost_cap = (emergency_cap(net, committed) if emerg_cap else None)
+        u_exp = solve_recourse(p, net, committed, soc, nu_end, kappa,
+                               expost_cap).u
         out.append(DayResult(
             j=j, g=g, a=committed, ell_hat=ell0, r_hat=stage_fcasts[0][1],
             ns=ns0, c=c, d=d, u=u, w=w, S=s,
             z=settle_cost(p, g, committed, u, kappa),
             z_ce=settle_cost(p, g, committed, ceu, kappa),
             z_expost=settle_cost(p, g, committed, u_exp, kappa),
-            z_pi=z_pi))
+            z_pi=z_pi, cap_resid=cap_resid, cap_iters=cap_iters))
         soc = s[T]
         hist.append(stage_fcasts)
         if (j + 1) % 31 == 0:

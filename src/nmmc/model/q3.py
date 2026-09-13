@@ -1,10 +1,12 @@
 """题3 规划层与内环步进 LP（稀疏 HiGHS）。
 
 三个入口共用题2 档 §5 的物理模板（nmmc.model.q2 的布局约定，g → a）：
-    solve_stage  阶段 m 两阶段场景 LP（文档 §7.1）——本块承诺 a(B_m)
-                 （m=0 为全天计划 g）是 here-and-now 共享变量，更晚块的
-                 试探 a^(s) 是 wait-and-see（偏差费计入期望，正确预期
-                 "届时会重定"）；δ± 自动互斥（性质 5），纯 LP。
+    solve_stage  阶段 m≥1 两阶段场景 LP（文档 §7.1）——本块承诺 a(B_m)
+                 是 here-and-now 共享变量，更晚块的试探 a^(s) 是
+                 wait-and-see（偏差费计入期望）；δ± 自动互斥（性质 5），
+                 纯 LP。⚠️ 交付路径的 m=0（0:00 定 g）不走本函数，见
+                 nmmc.run.q3.rollout：沿用题 2 两阶段 SAA（solve_plan）。
+                 本函数 m=0 分支保留为 wait-and-see 对照（诊断 CF-D）。
     solve_step   内环在线随机 MPC 的单步两阶段 LP（文档 §8，交付）——
                  当步 (c,d,u,w,S_{t+1}) here-and-now 全情景共享，剩余
                  时域按情景分支；分支内供给分层：锁定段注入移右端
@@ -56,7 +58,8 @@ class StageResult:
 def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | None,
                 scn: np.ndarray, probs: np.ndarray, m: int, s_anchor: float,
                 nu_end: float, kappa: float,
-                p_scn: np.ndarray | None = None) -> StageResult:
+                p_scn: np.ndarray | None = None,
+                u_cap: np.ndarray | None = None) -> StageResult:
     """解阶段 m 两阶段场景 LP（文档 §7.1）。
 
     Args:
@@ -70,6 +73,9 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         s_anchor: 当前真实储电量（SOC 重锚，文档 §5.4）。
         nu_end: 日末储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        u_cap: 情景紧急购电上界，shape (N_s, 144)；None 为无上界。
+            上界右端取 (n−a)⁺，a 为本阶段决策，由调用方按序列线性化
+            给定（题 2 档 §6.1 同款）。⚠️ 不得写成 u+a≤n。
         p_scn: 情景电价 p^(s)，shape (N_s, 144)——更晚块试探 a^(s)、δ±(s)
             与紧急项 u^(s) 均为情景相关量、不可折叠、逐情景计价（性质 2）；
             None 即常数价口径（题3 / 读法 D / 附件1 退化，逐位不变）。
@@ -93,8 +99,8 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
     n_blk = 3 * n_free + 5 * nh + 1
     n = n_hn + (2 * n_hn if m else 0) + n_s * n_blk
     o_hn = 0
-    o_dp = n_hn if m else 0                  # 共享 δ+/δ−（仅 m≥1）
-    o_s = o_dp + (2 * n_hn if m else 0)      # 首情景块起点
+    o_dp = n_hn                              # δ 块起点（m=0 不写共享 δ，但偏移仍按 hn 之后算）
+    o_s = o_dp + (2 * n_hn if m else 0)      # 首情景块起点；m=0 时 o_s = n_hn
 
     # 变量布局：x = [hn(B_m)] (+ m≥1: [δ+(B_m), δ−(B_m)]) + N_s 个情景块
     # [af, δ+f, δ−f, c, d, u, w, S(nh+1)]
@@ -194,6 +200,8 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         lo[o_st:o_st + nh + 1] = S_MIN
         hi[o_st:o_st + nh + 1] = S_MAX
         lo[o_st] = hi[o_st] = s_anchor
+        if u_cap is not None:
+            hi[o_u:o_u + nh] = u_cap[s, h0:]
 
     # 求解；Z̃ = obj @ x（期望口径，含末端估值，非现金费用）
     x, _, _ = solve_eq_lp(obj, rows, cols, vals, np.array(b), lo, hi)
@@ -214,7 +222,8 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
 def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                free_mask: np.ndarray, g: np.ndarray, scn: np.ndarray,
                probs: np.ndarray, t: int, s_prev: float, nu_end: float,
-               kappa: float, p_scn: np.ndarray | None = None) -> StepResult:
+               kappa: float, p_scn: np.ndarray | None = None,
+               u_cap: np.ndarray | None = None) -> StepResult:
     """解内环在线随机 MPC 的单步两阶段 LP（文档 §8，交付）。
 
     第一阶段（here-and-now）：当步 (c,d,u,w) 与 S_{t+1} 全情景共享，
@@ -239,6 +248,9 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         s_prev: 真实储电量 S_t（时段初）。
         nu_end: 时域末端储电量估值 ν^end。
         kappa: 紧急购电倍率 κ。
+        u_cap: 情景紧急购电上界，shape (N_s, 144)，None 为无上界。
+            当步上界按真值口径取 (n_t − a_t)⁺（a_t = committed[t] 已锁定）；
+            剩余时域第 s 块取 u_cap[s, t+1:]。
         p_scn: 未来分支的情景电价 p^(s)（τ > t 段，题4 档 §7）；None 即
             常数价口径（题3，各情景用 p）。
 
@@ -251,6 +263,7 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         出现即为实现错误）。
     """
     m = T - 1 - t
+    cap_now = np.inf if u_cap is None else max(net[t] - committed[t], 0.0)
     # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（继承题2 档 C15）
     # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t − ν·S_{t+1}
     if m == 0:
@@ -262,9 +275,9 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         vals = [np.array([1.0, 1.0, -1.0, -1.0]),
                 np.array([1.0, -ETA, 1.0 / ETA])]
         b = np.array([net[t] - committed[t], s_prev])
-        # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S_MIN ≤ S_{t+1} ≤ S_MAX
+        # 变量域：0 ≤ c,d ≤ E_MAX_PER；0 ≤ u ≤ cap；w ≥ 0；S ∈ [S_MIN,S_MAX]
         lo = np.array([0.0, 0.0, 0.0, 0.0, S_MIN])
-        hi = np.array([E_MAX_PER, E_MAX_PER, np.inf, np.inf, S_MAX])
+        hi = np.array([E_MAX_PER, E_MAX_PER, cap_now, np.inf, S_MAX])
         x, _, z = solve_eq_lp(obj, rows, cols, vals, b, lo, hi)
         return StepResult(c=float(x[0]), d=float(x[1]), u=float(x[2]),
                           w=float(x[3]), obj=z)
@@ -285,6 +298,7 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
     hi[0] = hi[1] = E_MAX_PER                # 当步 c / d 功率上限
+    hi[2] = cap_now                          # 当步紧急购电上界（真值口径）
     lo[4] = S_MIN                            # 共享 S_{t+1}
     hi[4] = S_MAX
     # 当步平衡 d+u−c−w = n_t−a_t 与 SOC 递推 S_{t+1}−ηc+d/η = S_t
@@ -316,6 +330,8 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         hi[o_d:o_d + m] = E_MAX_PER
         lo[o_st:o_st + m + 1] = S_MIN
         hi[o_st:o_st + m + 1] = S_MAX
+        if u_cap is not None:
+            hi[o_u:o_u + m] = u_cap[s, t + 1:]
         # 情景块锚定：S^s[0] = S_{t+1}
         rows.append(np.array([row, row]))
         cols.append(np.array([o_st, 4]))
@@ -359,7 +375,8 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
 
 def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
                free_mask: np.ndarray, g: np.ndarray, s_start: float,
-               nu_end: float, kappa: float) -> tuple[np.ndarray, ...]:
+               nu_end: float, kappa: float,
+               u_cap: np.ndarray | None = None) -> tuple[np.ndarray, ...]:
     """解确定性等价 MPC 的剩余时域 LP（CE 对照臂，文档 §12.3 执行层增益）。
 
     已锁定段注入为参数（移平衡式右端）；未锁定段 a 为变量，按
@@ -373,6 +390,7 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         g: 计划购电量切片（未锁定段的偏差基准）。
         s_start: 锚定储电量。
         nu_end / kappa: 末端估值 / 紧急倍率。
+        u_cap: 紧急购电上界（与 net 等长），None 为无上界。
 
     Returns:
         (c, d, u, w, S)：尾部补救量与储电量轨迹，S shape (n+1,)。
@@ -403,6 +421,8 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     lo[o_st:o_st + n_t + 1] = S_MIN
     hi[o_st:o_st + n_t + 1] = S_MAX
     lo[o_st] = hi[o_st] = s_start
+    if u_cap is not None:
+        hi[o_u:o_u + n_t] = u_cap
 
     # 平衡：d + u − c − w = n − a（已锁定段 a = committed 移右端，未锁定段 af 为变量）
     tt = np.arange(n_t)

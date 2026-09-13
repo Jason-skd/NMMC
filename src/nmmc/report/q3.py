@@ -20,6 +20,7 @@ from nmmc.model.q3 import beta_check
 from nmmc.report.common import (BLOCK_LABELS, PAPER_SLOTS, md_table, py_date,
                                 write_battery_sheet, write_emergency_sheet)
 from nmmc.report.q2 import EPS_EMERG, PAPER_DATES, WARMUP_DAYS, report_days
+from nmmc.run.q2 import CAP_TOL
 from nmmc.run.q3 import DayResult
 
 TEMPLATE = ATTACH / "附件5" / "result3.xlsx"
@@ -112,14 +113,18 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray
         "u∧c 时段数": int(sum(c["u_and_c"] for c in checks)),
         "C9 序关系违例天数": int(sum(c["c9_bad"] for c in checks)),
         "C3-3 结算式恒等残差": beta_check(),
+        "C16 上界收敛残差 max": float(max(d.cap_resid for d in rep)),
+        "C16 序列线性化轮数 max": int(max(d.cap_iters for d in rep)),
+        "C16 未收敛天数": int(sum(d.cap_resid > CAP_TOL for d in rep)),
         "紧急购电天数": int((u_all > EPS_EMERG).any(axis=1).sum()),
         "紧急购电时段数": int((u_all > EPS_EMERG).sum()),
         "弃电量合计": float(sum(d.w.sum() for d in rep)),
         "弃电率": float(sum(d.w.sum() for d in rep)
                         / max(float(year.r[[d.j for d in rep]].sum()), 1e-9)),
-        "SOC 均值": float(np.mean([d.S for d in rep])),
+        "SOC 均值": float(np.mean([d.S[:T] for d in rep])),
         "SOC 范围": (float(min(d.S.min() for d in rep)),
                      float(max(d.S.max() for d in rep))),
+        "隔夜 SOC 均值": float(np.mean([d.S[0] for d in rep])),
         "负载预报 MAE": float(err_l.mean()),
         "光伏预报 MAE": float(err_r.mean()),
     }
@@ -148,6 +153,7 @@ def metrics_row(label: str, epochs: tuple[int, ...], summary: dict
         "curtail_kwh": summary["弃电量合计"],
         "curtail_rate": round(summary["弃电率"], 6),
         "soc_mean": summary["SOC 均值"],
+        "soc_overnight": summary["隔夜 SOC 均值"],
     }
 
 
@@ -223,6 +229,8 @@ class DetailsCsv:
                 "S0": float(day.S[0]), "S144": float(day.S[T]),
                 "mae_ell": float(np.abs(day.ell_hat - year.ell[day.j]).mean()),
                 "mae_r": float(np.abs(day.r_hat - year.r[day.j]).mean()),
+                "cap_resid": day.cap_resid,
+                "cap_iters": day.cap_iters,
             })
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / "q3_details.csv"
@@ -261,6 +269,7 @@ class SummaryMd:
              f"{s['弃电率'] * 100:.2f}%"),
             ("SOC 均值 / 范围", f"{s['SOC 均值']:,.1f} kWh / "
              f"{s['SOC 范围'][0]:,.1f} ~ {s['SOC 范围'][1]:,.1f}"),
+            ("隔夜 SOC 均值", f"{s['隔夜 SOC 均值']:,.1f} kWh"),
         ])
         adj = md_table(["指标", "数值"], [
             ("δ+ 合计（上调）", f"{s['δ+ 合计']:,.1f} kWh"),
@@ -274,7 +283,9 @@ class SummaryMd:
             for k in ("C3-3 结算式恒等残差", "C3-7 前缀偏差 max",
                       "C6 对账残差 max", "C7 能量守恒残差 max",
                       "C8 max(c·d)", "C8 max(u·w)", "u∧c 时段数",
-                      "C9 序关系违例天数")])
+                      "C9 序关系违例天数",
+                      "C16 上界收敛残差 max", "C16 序列线性化轮数 max",
+                      "C16 未收敛天数")])
         tab_rows = []
         for date in PAPER_DATES:
             day = next((d for d in days if str(_py_date(d, year)) == date),
@@ -315,6 +326,8 @@ class SummaryMd:
 
 ## 计算口径
 
+- 阶段 0（0:00）用题 2 两阶段 SAA 定 g；6/12/18 点才解分块修订 LP。
+- 紧急购电口径 u ≤ (n−a)⁺（与题 2 v6 同款，规划层序列线性化到不动点）。
 - Z = Σ[p·a + ½p|a−g|] + κΣp·u（现金费用，真实路径 u）；Z̃ 含末端估值，不上报。
 - Z^CE 与 Z^online 同 g、同 committed、同日初 SOC，只差内环未来表示
   （当前阶段情景分布 vs 单条 α^rt=0.65 分位路径）——执行层增益即
