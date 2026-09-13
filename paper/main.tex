@@ -20,6 +20,7 @@
 \usepackage{amsmath,amssymb,bm}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{multirow}
 \usepackage{caption}
 \usepackage{xcolor}
 \usepackage{listings}
@@ -155,10 +156,40 @@
 
 各问分别交付 result1--result4 共五个结果文件，报表粒度为 10 分钟（购电）与 4 小时（充放电）。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.9\textwidth]{fig01_微网母线与电量流转}
-\caption{微网母线结构与电量流转：模型按母线侧计量，报表按电池侧计量，效率损失集中于逆变器}
+\begin{tikzpicture}[
+    box/.style={draw, rectangle, minimum width=2.2cm, minimum height=1cm, align=center, thick},
+    busbox/.style={draw, rectangle, minimum width=2.5cm, minimum height=1.6cm, align=center, thick},
+    arrow/.style={-{Stealth[length=3mm, width=2mm]}, thick},
+    dashedarrow/.style={-{Stealth[length=3mm, width=2mm]}, thick, dashed},
+    labeltext/.style={font=\small\itshape}
+]
+    \node[busbox] (bus) {母线};
+    \node[box, left=2cm of bus] (grid) {外网\\(购电付费)};
+    \node[box, below=1.2cm of grid] (pv) {光伏\\(免费注入)};
+    \node[box, right=3cm of bus] (load) {小区负载};
+    \node[box, below=1.2cm of load] (curt) {弃电\\(免费耗散)};
+    \node[box, below=1.5cm of bus] (inv) {逆变器\\[2pt] \(\eta = 0.9\)};
+    \node[box, below=1.5cm of inv] (bat) {电池\\[2pt] \(S_t\)};
+    \draw[arrow] (grid) -- node[midway, above, labeltext] {\(g_t\)} (bus);
+    \draw[arrow] (pv) -- node[midway, above, labeltext] {\(r_t\)} (bus);
+    \draw[arrow] (bus) -- node[midway, above, labeltext] {\(\ell_t\)} (load);
+    \draw[dashedarrow] (bus) -- node[midway, above, labeltext] {\(w_t\)} (curt);
+    \draw[arrow] ([xshift=-4pt]bus.south) -- node[midway, left, labeltext] {\(c_t\)} ([xshift=-4pt]inv.north);
+    \draw[arrow] ([xshift=4pt]inv.north) -- node[midway, right, labeltext] {\(d_t\)} ([xshift=4pt]bus.south);
+    \draw[arrow] ([xshift=-4pt]inv.south) -- node[midway, left, labeltext] {\(\eta c_t\)} ([xshift=-4pt]bat.north);
+    \draw[arrow] ([xshift=4pt]bat.north) -- node[midway, right, labeltext] {\(d_t/\eta\)} ([xshift=4pt]inv.south);
+    \node[right=1cm of load, align=left, font=\footnotesize] (notes) {
+        \textbf{母线侧计量：}\\
+        单时段充放电量\\ \(\le 833.33\) kWh\\[6pt]
+        \textbf{效率损耗发生处：}\\ \(\eta = 0.9\)\\[6pt]
+        \textbf{电池侧计量：}\\ \(\eta c_t\) 落袋，\(d_t/\eta\) 取出\\[6pt]
+        \textbf{电池运行区间：}\\ \(1200 \le S_t \le 10800\) kWh
+    };
+    \draw[dashed, gray] ([xshift=-1.5cm, yshift=0.5cm]inv.north west) rectangle ([xshift=1.5cm, yshift=-0.5cm]bat.south east);
+\end{tikzpicture}
+\caption{微网系统物理拓扑与电量流转图}
 \label{fig:bus}
 \end{figure}
 
@@ -167,7 +198,7 @@
 
 \subsection{总体结构：一条物理内核，四级信息收紧}
 
-四问共享同一物理系统，差别只在“决策时知道什么、做错了罚多少”。因此本文不分别为四问各建一个模型，而是抽取一个共用的物理可行域（母线能量平衡 + SOC 递推 + 功率与容量边界），在其上逐级改变信息结构与结算规则（图 \ref{fig:framework}）：问题一是完美信息下的单阶段线性规划；问题二引入两阶段决策（0:00 锁定计划、日内实时补救）与 5 倍断供罚则，对应两阶段随机规划\cite{birge}；问题三把“一次锁定”放宽为“分块多次锁定”，偏差罚则对称，本质是多阶段决策的块结构简化；问题四把电价由确定参数变为第三个不确定源。这样的结构使前一问的解是后一问的严格特例（如问题三中令 $a\equiv g$ 即退化为问题二），从而“后一问的费用不得超过前一问”本身成为判定实现正确性的检验。
+四问共享同一物理系统，差别只在“决策时知道什么、做错了罚多少”。因此本文不分别为四问各建一个模型，而是抽取一个共用的物理可行域（母线能量平衡 + SOC 递推 + 功率与容量边界），在其上逐级改变信息结构与结算规则（图 \ref{fig:framework}）：问题一是完美信息下的单阶段线性规划；问题二引入两阶段决策（0:00 锁定计划、日内实时补救）与 5 倍断供罚则，对应两阶段随机规划\cite{birge}；问题三把“一次锁定”放宽为分块承诺下的嵌套滚动时域优化——外环在 6/12/18 时逐块锁定调整量、内环逐时段滚动执行，偏差罚则对称；问题四把电价由确定参数变为第三个不确定源。这样的结构使前一问的解是后一问的严格特例（如问题三中令 $a\equiv g$ 即退化为问题二），从而“后一问的费用不得超过前一问”本身成为判定实现正确性的检验。
 
 \subsection{问题一分析}
 
@@ -185,9 +216,9 @@
 
 问题四的关键认定是附件四的地位：它与附件二句式同构、同为全年实现值，故 0:00 同样不可知当日电价，需自建价格预报（若允许 0:00 读取当日 144 个实现价，则同一论文对两份同构附件采用了两套信息纪律）。该读法可行的依据有二：其一，电价乘性分解（日水平 $\times$ 日内形态）解释对数方差的 92.32\%，日内形态高度稳定；其二，可证明日内调度只依赖价格形态与跨日价格比，与日价格水平无关。价格与负载残差相关系数达 0.89，最坏组合（高缺口 $\times$ 高价）必须由三元联合情景刻画，独立抽样会系统性低估紧急购电费用。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.93\textwidth]{fig02_三问递进-信息决策罚则}
+\includegraphics[width=0.93\textwidth]{fig02_三问递进-信息决策罚则.png}
 \caption{四问递进关系：信息结构、决策结构与罚则逐级收紧，前一问是后一问的严格特例}
 \label{fig:framework}
 \end{figure}
@@ -223,7 +254,7 @@
 
 \subsection{符号说明}
 
-\begin{table}[htbp]
+\begin{table}[!t]
 \centering\small
 \caption{主要符号}
 \begin{tabular}{clcl}
@@ -273,16 +304,16 @@ $\Zon$ 等 & 全年费用口径 & 元 & online / CE / 事后最优 / 完美信�
 
 附件一典型日呈“双谷双峰”电价与昼间光伏结构（图 \ref{fig:data}）：电价谷段（00:00--06:00、11:00--13:00）低至约 0.42 元/kWh，峰段（06:00--10:00、17:00--21:00）高达 1.40 元/kWh，峰谷比 3.76；光伏出力集中于 04:40--19:20，日发电 55\,483 kWh，恰为日负荷 111\,025 kWh 的一半；10:00--14:00 光伏大于负载出现盈余，为储能充电提供天然空间。全年尺度上（图 \ref{fig:year}），负载与光伏呈夏丰冬欠的季节结构，负载有清晰的周内节律（周五、周六约为其余五天的 63\%）——该节律是后文负载预报与电价预报的主要信息来源。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.92\textwidth]{fig03_附件1典型日-电价负荷光伏}
+\includegraphics[width=0.92\textwidth]{fig03_附件1典型日-电价负荷光伏.png}
 \caption{附件一典型日：电价双谷双峰、光伏昼间出力与净负荷盈余区间}
 \label{fig:data}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.92\textwidth]{fig08_附件2全年负荷光伏}
+\includegraphics[width=0.92\textwidth]{fig08_附件2全年负荷光伏.png}
 \caption{附件二全年负载与光伏：季节结构与周内节律（暖机期一月不计报告）}
 \label{fig:year}
 \end{figure}
@@ -328,25 +359,57 @@ $\Zon$ 等 & 全年费用口径 & 元 & online / CE / 事后最优 / 完美信�
 
 最优购电费 \textbf{35\,118.5986 元}，全天购电 59\,482.70 kWh，循环水位 $S_0^\star=S_{144}=8\,550$ kWh。最优调度呈典型的“双谷充、双峰放”形态（图 \ref{fig:q1sched}）：谷段大量购电并同时充电（0--4 时充 1\,500 kWh，20--24 时充 7\,350 kWh），峰段储能放电覆盖净负荷高峰；SOC 轨迹在日内触及上、下界，容量与功率约束成为紧约束，印证性质 2 的判断。
 
+题目要求的表 1（指定时段计划购电量）与表 2（储能充放电量，电池侧口径）如下：
+
+\begin{table}[!t]
+\centering\small
+\caption{问题一表 1：指定时段计划购电量与全天汇总}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+ & \multicolumn{6}{c}{指定时段购电量（kWh）} & 全天购电量 & 全天购电费 \\
+\cmidrule(lr){2-7}
+ & 10:00 & 12:00 & 14:00 & 16:00 & 18:00 & 20:00 & （kWh） & （元） \\
+\midrule
+典型日 & 0.00 & 480.41 & 0.00 & 445.43 & 531.89 & 0.00 & 59\,482.70 & 35\,118.60 \\
+\bottomrule
+\end{tabular}
+\label{tab:q1t1}
+\end{table}
+
+\begin{table}[!t]
+\centering\small
+\caption{问题一表 2：储能充放电量（电池侧口径，kWh）}
+\begin{tabular}{lrrrrrr}
+\toprule
+时段 & 0--4 时 & 4--8 时 & 8--12 时 & 12--16 时 & 16--20 时 & 20--24 时 \\
+\midrule
+充电量 $\eta c$ & 1\,500.00 & 750.00 & 4\,309.17 & 4\,757.43 & 0.00 & 7\,350.00 \\
+放电量 $d/\eta$ & 0.00 & 7\,073.16 & 1\,892.22 & 101.22 & 6\,422.37 & 3\,177.63 \\
+\bottomrule
+\end{tabular}\\[2pt]
+{\small 0:00 储电量 $=$ 24:00 储电量 $=$ 8\,550.00 kWh。}
+\label{tab:q1t2}
+\end{table}
+
 对比基准回答两个层次的问题（图 \ref{fig:q1cost}）：无电池直接购电需 48\,052.05 元，储能带来 \textbf{26.92\%} 节省（要不要电池）；“低于 35\% 价格分位充、高于 65\% 分位放”的阈值规则策略需 36\,712.76 元，优化再省 \textbf{4.34\%}（要不要优化）。能量对账见图 \ref{fig:q1bal}：全天购电 + 光伏 = 负载 + 往返损耗 3\,940.73 kWh，电池侧充放差恰为零，逐项残差为 0。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig04_题1典型日调度}
+\includegraphics[width=0.95\textwidth]{fig04_题1典型日调度.png}
 \caption{问题一最优调度：功率流、SOC 轨迹与储能价值空间（$p_t-\lambda_t$）}
 \label{fig:q1sched}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.9\textwidth]{fig05_典型日电量对账}
+\includegraphics[width=0.9\textwidth]{fig05_典型日电量对账.png}
 \caption{典型日电量对账：购电与光伏收入对负载与损耗支出，电池侧口径恒等}
 \label{fig:q1bal}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.62\textwidth]{fig06_题1费用对照}
+\includegraphics[width=0.62\textwidth]{fig06_题1费用对照.png}
 \caption{问题一费用对照：优化解、阈值规则与无电池直买}
 \label{fig:q1cost}
 \end{figure}
@@ -355,16 +418,16 @@ $\Zon$ 等 & 全年费用口径 & 元 & online / CE / 事后最优 / 完美信�
 
 对偶变量的读数与理论一致（图 \ref{fig:q1dual}）：购电时段母线边际价值 $\lambda_t$ 与电价 $p_t$ 严格重合，放电时段 $\lambda_t$ 明显低于 $p_t$（电池成为更便宜的边际电源）；储能边际价值 $\nu_t$ 全天平滑变化，循环约束对偶 $\nu^\star=0.4720$ 元/kWh 给出“池内留 1 kWh 过夜”的边际价值，将成为题二、题三的终端价值锚。自检：循环误差 $|S_{144}-S_0|=0$，逐时段弃电为 0（全额消纳），充放乘积为 0。灵敏度方面（图 \ref{fig:q1s0}），把 $S_0$ 固定在 1\,200 至 10\,800 kWh 重解，费用曲线在 8\,550 附近呈平坦盆地、总带宽仅 0.24\%（固定为附录一的 6\,000 kWh 只贵 8.35 元），说明 $S_0$ 决策化不损害稳健性。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.75\textwidth]{q1/q1_duals}
+\includegraphics[width=0.75\textwidth]{q1/q1_duals.png}
 \caption{问题一对偶变量：母线边际价值 $\lambda_t$ 与储能边际价值 $\nu_t$ 对电价 $p_t$}
 \label{fig:q1dual}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.62\textwidth]{fig07_S0敏感性}
+\includegraphics[width=0.62\textwidth]{fig07_S0敏感性.png}
 \caption{初始水位 $S_0$ 扫描：费用带宽 0.24\%，循环水位近乎自由方向}
 \label{fig:q1s0}
 \end{figure}
@@ -376,9 +439,9 @@ $\Zon$ 等 & 全年费用口径 & 元 & online / CE / 事后最优 / 完美信�
 
 在假设 A5（诚实回测）下，第 $j$ 日 0:00 可见信息集 $\mathcal{F}_0^{(j)}$ 只含历史。决策分两阶段：计划购电量 $g^{(j)}$ 于 0:00 锁定、全额计费、不可增减；充放、紧急购电、弃电为实时补救量。全年以真实路径 SOC 链衔接（$S_0^{(j+1)}=S_{144}^{(j)}$），一月暖机不计费。整体架构见图 \ref{fig:q2arch}。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.9\textwidth]{fig09_题2四层架构与随机MPC}
+\includegraphics[width=0.9\textwidth]{fig09_题2四层架构与随机MPC.png}
 \caption{问题二四层架构与在线随机 MPC：当步决策确定、剩余时域按情景分支}
 \label{fig:q2arch}
 \end{figure}
@@ -387,9 +450,9 @@ $\Zon$ 等 & 全年费用口径 & 元 & online / CE / 事后最优 / 完美信�
 
 负载点预报取最近 4 个同星期几日的同点均值（居民负载的周节律），光伏取近 7 日同点均值（天气持续性与慢季节漂移，无周节律）。误差情景采用“残差整条贴加”：对每个历史日，用其当时的真预报（伪样本外，无信息泄漏）计算负载加性残差与光伏相对残差，取最近 12 条残差日曲线、整条贴加到当日点预报上，等概率构成 $N_s=12$ 个情景。整条贴加自动保留日内相关与负荷—光伏联动，无需显式估计协方差矩阵。交付口径下负载预报平均绝对误差 31.48 kWh/时段、光伏 25.57 kWh/时段，误差分布与季节结构见图 \ref{fig:q2fcst}。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig10_题2预报质量-L1P1}
+\includegraphics[width=0.95\textwidth]{fig10_题2预报质量-L1P1.png}
 \caption{问题二交付组合的预报质量：负载与光伏的误差分布及分季节技能}
 \label{fig:q2fcst}
 \end{figure}
@@ -424,7 +487,7 @@ S_t^{(s)}=S_{t-1}^{(s)}+\eta c_t^{(s)}-d_t^{(s)}/\eta,\quad\forall s
 
 \subsection{求解结果}
 
-\begin{table}[htbp]
+\begin{table}[!t]
 \centering\small
 \caption{问题二全年结果与信息阶梯（334 个交付日，元）}
 \begin{tabular}{lrr}
@@ -444,36 +507,82 @@ $\ZCE$ 确定性等价 MPC & 14\,254\,554.72 & 同 $g$、同 SOC，只差未来�
 \label{tab:q2ladder}
 \end{table}
 
-交付费用 13\,745\,816.13 元，其中计划购电费 12\,818\,726 元、紧急购电费 927\,090 元（占 6.74\%）。信息价值二分解：$\mathrm{EVPI}=\Zon-\ZPI=152.3$ 万元，其中日前信息损失（$g$ 选错）占 81.5\%，实时信息损失（补救看不到未来）占 18.5\%，费用主要丢在 0:00 的计划上。执行层机制归因：$\ZCE-\Zon=50.9$ 万元，同一计划、同日初 SOC 下“未来是分布还是一条路径”的价差（表 \ref{tab:q2ladder}、图 \ref{fig:q2ladderattr}）。逐日费用与紧急费的时间分布见图 \ref{fig:q2daily}：紧急费集中在负载高、光伏弱的冬季与早春；四个指定日（二分二至）的剖面见图 \ref{fig:q2solstice}，夏至日购电量最低（光伏覆盖近半），冬至日最高。
+全年 334 个交付日合计费用 \textbf{13\,745\,816.13 元}（表 \ref{tab:q2ladder}），由两笔构成：计划购电费 12\,818\,726 元（93.3\%）与紧急购电费 927\,090 元（6.74\%）——5 倍罚则只作用于不到百分之七的支出，计划的总体覆盖水平恰当。分日看，夏至日（6.21）光伏覆盖近半负载、全天仅购 35\,318 kWh；冬至日（12.21）净负荷最高、购 95\,949 kWh（表 \ref{tab:q2days}）；紧急购电只在春分、秋分两个指定日发生，秋分日午后至晚峰共 7 段 2\,259 kWh（表 \ref{tab:q2emerg}），对应连日阴雨后的预报偏差期。
+
+\begin{table}[!t]
+\centering\small
+\caption{问题二表 1：四个指定日的计划购电量（kWh）与购电费（元，含紧急费）}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+ & \multicolumn{6}{c}{指定时段计划购电量} & 全天购电量 & 全天购电费 \\
+\cmidrule(lr){2-7}
+日期 & 10:00 & 12:00 & 14:00 & 16:00 & 18:00 & 20:00 & （kWh） & （元） \\
+\midrule
+03-20（春分） & 0.00 & 682.93 & 0.00 & 472.59 & 681.32 & 0.00 & 67\,189.46 & 42\,111.37 \\
+06-21（夏至） & 0.00 & 0.00 & 0.00 & 144.28 & 189.05 & 0.00 & 35\,318.42 & 20\,651.78 \\
+09-23（秋分） & 0.00 & 435.19 & 0.00 & 491.94 & 721.28 & 17.80 & 64\,084.53 & 52\,704.62 \\
+12-21（冬至） & 0.00 & 958.12 & 0.00 & 840.21 & 711.94 & 0.00 & 95\,949.37 & 61\,723.87 \\
+\bottomrule
+\end{tabular}
+\label{tab:q2days}
+\end{table}
+
+\begin{table}[!t]
+\centering\small
+\caption{问题二表 3：四个指定日的紧急购电情况（其余两日未发生）}
+\begin{tabular}{llrr}
+\toprule
+日期 & 购电时间段 & 紧急购电量（kWh） & 紧急购电费（元，$5\times p$） \\
+\midrule
+03-20 & 17:00--17:20 & 32.82 & \multirow{8}{*}{合计 1\,322.78} \\
+03-20 & 20:10--20:40 & 130.01 & \\
+03-20 & 21:30--21:50 & 63.39 & \\
+09-23 & 14:50--15:00 & 48.25 & \multirow{9}{*}{合计 12\,764.51} \\
+09-23 & 15:10--15:20 & 37.38 & \\
+09-23 & 15:50--16:50 & 485.82 & \\
+09-23 & 18:20--18:50 & 254.87 & \\
+09-23 & 19:10--19:20 & 170.58 & \\
+09-23 & 19:40--20:00 & 158.72 & \\
+09-23 & 20:10--21:50 & 1\,103.53 & \\
+\bottomrule
+\end{tabular}
+\label{tab:q2emerg}
+\end{table}
+
+在总数之外，费用还能拆出“信息的价值”，它回答“钱丢在哪一步”。先看总账：完美信息下界 $\ZPI=12\,223\,093$ 元，$\mathrm{EVPI}=\Zon-\ZPI=152.3$ 万元，这是“不知道未来”的总代价；将其二分，81.5\% 丢在 0:00 的计划上（日前信息损失），18.5\% 丢在日内补救看不到未来（实时信息损失）——改进的优先级因此应在预报与计划层，而非执行层。再看执行层内部：同一计划、同日初 SOC 下把执行器从随机 MPC 换成确定性等价（表 \ref{tab:q2ladder} 末行），费用升至 14\,254\,555 元，差 50.9 万元。这 50.9 万元是“未来以分布还是以单条路径进入模型”的净价差，与求解器优劣无关（图 \ref{fig:q2ladderattr}）。逐日费用与紧急费的时间分布见图 \ref{fig:q2daily}（紧急费集中在负载高、光伏弱的冬季与早春），四个指定日的购电与 SOC 剖面见图 \ref{fig:q2solstice}。
 
 紧急购电结构：发生 168/334 天、2\,066 个时段，频率 4.30\%，与报童临界频率 $1-\alpha^\star=4.5\%$（过量入池回收率 $\theta=\eta^2$）一致\cite{qin2011}，该频率是计划层覆盖水平的设计值而非失控；电量按电价分段为谷 5.57\%、平 42.85\%、峰 51.58\%（真缺口集中在峰时），“紧急购电同时充电”的时段数为 0，光伏盈余时段占比 0.00\%。归因五分类（按电量）：放电功率强制 8.71\%、储能耗尽 18.99\%、囤电型 0.00\%（结构保证）、配给型 49.06\%、低水位带 23.23\%。配给型指情景集认为晚峰缺口概率高于门槛时，把有限存量留给更贵窗口、当步平价缺口用紧急购电顶替，属最优跨时段配给而非失误（抽检 24 个此类日，全部在事后把 SOC 降至 2\,500 kWh 以下且均在电价高于 1.2 元的时段放电）。弃电集中于 9--14 时：该时段容量与充电功率双紧（48.5\% 的弃电时段、11.1\% 时段充电顶格），是“存不下”而非“不想存”。
 
-\begin{figure}[htbp]
+值得说明的是口径上界的取舍。加与不加上界，全年费用仅相差 0.17\%（23\,338 元），但交付表的含义完全不同：无上界时模型会在电池接近满电时仍以 5 倍价买入囤存，这在数学上最优（\ref{sec:q2cap} 节的套利机制使然），但“一边宣称断供紧急、一边在电池充盈时高价囤电”对小区居民难以解释，舆情风险与赔付暴露都更高。本文放弃这 0.17\% 的费用优势，换取交付表中每一度紧急购电都对应一次真实断供——这是用可解释性定价的合规成本。
+
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig11_题2逐日费用与紧急费}
+\includegraphics[width=0.95\textwidth]{fig11_题2逐日费用与紧急费.png}
 \caption{问题二逐日总费用与紧急购电费：季节模式与异常日}
 \label{fig:q2daily}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig12_题2二分二至剖面}
+\includegraphics[width=0.95\textwidth]{fig12_题2二分二至剖面.png}
 \caption{问题二四个指定日（春分、夏至、秋分、冬至）的购电与 SOC 剖面}
 \label{fig:q2solstice}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig13_题2费用阶梯与紧急归因}
+\includegraphics[width=0.95\textwidth]{fig13_题2费用阶梯与紧急归因.png}
 \caption{问题二费用阶梯（左）与紧急购电归因的加/不加口径上界对照（右）}
 \label{fig:q2ladderattr}
 \end{figure}
 
 \subsection{模型检验}
 
-\textbf{执行层消融（三代对照）。}确定性等价执行层（把未来压缩为单条分位路径）年费用 14\,075\,337 元，紧急购电 51\% 买在谷价、缺口频率 11.19\%、86.5\% 紧急电量发生在 SOC 高于 3\,000 kWh 时；换为随机 MPC 后降至 13\,722\,478 元（三项同时收敛）；加口径上界（最终交付）为 13\,745\,816 元；上界的 23\,338 元（$+0.17\%$）是把模型收紧到题意的合规成本，换来囤电、盈余时段买入、紧急充电三项结构性归零，本文如实报告。
+\textbf{执行层消融（三代对照）。}这组实验回答“执行器里未来应当怎么表示”。三条臂共用同一条计划链（$g$ 与逐日初 SOC 完全相同），只换执行器：第一代为确定性等价，把 12 个情景压缩成单条 0.65 分位参考路径，未来被当成确定的；第二代换成随机 MPC，保留完整情景分布；第三代在第二代之上加紧急购电口径上界，把可行域收紧到题意。三代年费用依次为 14\,075\,337、13\,722\,478、13\,745\,816 元。第一跳省下 35.3 万元，是信息表示方式的价差：确定性等价把“可能缺口”当作“必然缺口”，储能影子价格被钉在最高档，其 86.5\% 的紧急电量发生在电池有电（SOC 高于 3\,000 kWh）时、51\% 买在谷价、缺口频率 11.19\% 远超设计值，三项症状同源；第二跳回升 2.3 万元是口径合规成本，换来囤电、盈余时段买入、紧急充电三项结构性归零。扫遍分位参数，确定性等价的 U 形曲线最低点仍高于随机 MPC——差距不是调参不足，是信息结构缺失。
 
-\textbf{规划层已在费用最优点的证据。}将情景净负荷整体上抬 50 kWh/时段重跑：紧急电量下降 71\% 但总费用上升 4.79\%、弃电增加 65\%（中午存不下）。加厚计划是以钱买心安。末端估值三点重扫：$\nuend=0.60/0.80/1.00$ 时费用分别 $+0.79\%/+1.12\%/+1.43\%$，单调变差，锚 0.472 确认最优。
+\textbf{规划层裕度实验。}这组实验回答“紧急购电多，是不是计划买少了”。做法是把 12 个情景的净负荷人为整体上抬 50 kWh/时段（相当于强迫计划每天多买约 7\,200 kWh），其余设置不动、全年重跑。结果：紧急电量确实下降 71\%（指标变好），但总费用上升 4.79\%、弃电增加 65\%——因为中午容量与充电功率双紧，多买的电存不下只能弃掉，晚间仍可能动用紧急购电。它证伪了“紧急购电多 $=$ 计划不足”的直觉：计划已在费用最优点，继续加厚是以钱买心安。配套的末端估值三点重扫给出同一结论：$\nuend=0.60/0.80/1.00$ 时费用分别 $+0.79\%/+1.12\%/+1.43\%$，单调变差，锚 0.472 确认最优。
+
+\textbf{预报层消融网格。}负载 3 候选 $\times$ 光伏 3 候选 $\times$ 残差窗 2 配置共 18 组同口径全年回测：同星期几 EWMA 组合（L2-P1-R2）以 13\,659\,949 元胜出，较本文交付组合再降 0.63\%，且三轴内部序全部一致（$\mathrm{L2>L1>L3}$ 六组全对、$\mathrm{P1>P2>P3}$、$\mathrm{R2>R1}$ 九组全对），说明是结构性信号而非随机波动。因更换组合牵动全部上报数字与后两问的预报层继承，本文仍按机制可解释的交付组合上报，0.63\% 记为预报层已知的改进空间。
 
 \textbf{自检。}对账恒等式（充放电池侧差 $=$ SOC 日内净变化）与能量守恒残差 $\le10^{-11}$；序关系 $\ZPI\le\Zep\le\Zon$ 全年 0 违例；充放乘积与紧急—弃电乘积逐时段为 0。
 
@@ -494,9 +603,9 @@ Z_t^{\mathrm{buy}}=p_t\min(g_t,a_t)+\beta^-p_t\delta_t^-+\beta^+p_t\delta_t^+
 $\tfrac12 p_t(|a^{(1)}-g|+|a^{(2)}-a^{(1)}|)\ge\tfrac12p_t|a^{(2)}-g|$，
 且“费用挂时段电价、信息单调、远期承诺不约束中间执行”三支柱与结算读法无关。该定理把 $4\times144$ 维修订决策约简为四个 36 维块决策，是全年 334 天可解的前提。分块结构与四档价签（违约 0.5 / 计划 1.0 / 加订 1.5 / 紧急 5）见图 \ref{fig:q3commit}。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.9\textwidth]{fig14_题3分块承诺与四档价签}
+\includegraphics[width=0.9\textwidth]{fig14_题3分块承诺与四档价签.png}
 \caption{题三分块承诺时间结构与四档价签阶梯}
 \label{fig:q3commit}
 \end{figure}
@@ -512,9 +621,9 @@ $\tfrac12 p_t(|a^{(1)}-g|+|a^{(2)}-a^{(1)}|)\ge\tfrac12p_t|a^{(2)}-g|$，
 
 数据核验给出的结构判断贯穿建模：光伏 99.5\% 集中在 6--18 时，18--24 时几乎无光伏却是全天最贵的块（均价 0.926 元/kWh），故 18:00 修订的信息价值主要来自已观测的负载而非光伏预报；0--6 时恒为最便宜的块。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig15_题3白天预报融合}
+\includegraphics[width=0.95\textwidth]{fig15_题3白天预报融合.png}
 \caption{题三白天目标预报：提前期 RMSE（官方 / 持续法 / 融合）与反方差权重 $\varphi(h)$}
 \label{fig:q3fusion}
 \end{figure}
@@ -525,7 +634,7 @@ $\tfrac12 p_t(|a^{(1)}-g|+|a^{(2)}-a^{(1)}|)\ge\tfrac12p_t|a^{(2)}-g|$，
 
 \subsection{求解结果}
 
-\begin{table}[htbp]
+\begin{table}[!t]
 \centering\small
 \caption{问题三全年结果（334 个交付日）}
 \begin{tabular}{lrr}
@@ -546,18 +655,38 @@ $\Zep$ / $\ZPI$ & 12\,983\,832.24 / 12\,243\,666.87 & \\
 \label{tab:q3res}
 \end{table}
 
-问题三的结构变化全部兑现（表 \ref{tab:q3res}、图 \ref{fig:q3demo} 与图 \ref{fig:q3q2}）：1.5 倍加订通道顶替了 5 倍兜底，紧急费占比从 6.74\% 压至 0.91\%；分块紧急电量对比问题二，可修订的三块合计降至 0.126 倍，不可修订的夜间块为 0.003 倍；计划覆盖水平在 6:00 处出现台阶（夜间块覆盖率 1.038，其后三块均值 0.930），即夜间无修订机会故多备、白天可修订故少备。偏差费 2.27\% 是购买修订灵活性的定价。下调电量（52.2 万 kWh）多于上调（27.7 万 kWh），全部落在三个可修订块（夜间不可修订块为 0），其中午后两块占下调的 90.3\%；机理是日内预报把光伏与负载向下修正、原计划偏多，与“电池有余量时应宁存不退”的理论预期方向相反，本文如实报告该差异。最大偏差日的修订行为演示见图 \ref{fig:q3demo}，题二与题三的逐日费用对照见图 \ref{fig:q3q2}：5.25\% 的净节省主要来自紧急费的压降，部分被偏差费抵消。
+按修订机会把全天分为四块：0--6 时块在 0:00 报出计划后即成最终量（其后没有修订机会，称不可修订块）；6--12、12--18、18--24 时三个块分别可在 6/12/18 时修订，称可修订块。问题三的结构变化全部兑现（表 \ref{tab:q3res}、图 \ref{fig:q3demo} 与图 \ref{fig:q3q2}）：1.5 倍加订通道顶替了 5 倍兜底，紧急费占比从 6.74\% 压至 0.91\%；分块对比问题二，三个可修订块的紧急电量合计降至其 0.126 倍（调整通道吸收了缺口），不可修订的夜间块为 0.003 倍（其缺口风险本与问题二同级，压降来自更准的日前计划）；计划覆盖水平在 6:00 处出现台阶（夜间块覆盖率 1.038，其后三块均值 0.930），即夜间无修订机会故多备、白天可修订故少备。偏差费 2.27\% 是购买修订灵活性的定价。下调电量（52.2 万 kWh）多于上调（27.7 万 kWh），全部落在三个可修订块（夜间不可修订块为 0），其中午后两块占下调的 90.3\%；机理是日内预报把光伏与负载向下修正、原计划偏多，与“电池有余量时应宁存不退”的理论预期方向相反，本文如实报告该差异。最大偏差日的修订行为演示见图 \ref{fig:q3demo}，题二与题三的逐日费用对照见图 \ref{fig:q3q2}：5.25\% 的净节省主要来自紧急费的压降，部分被偏差费抵消。
+
+四个指定日的计划与调整对照见表 \ref{tab:q3days}：春分、夏至的调整量低于计划（日内预报下修），秋分则上修，冬至基本不动——调整方向与当日预报偏差一致。
+
+\begin{table}[!t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{问题三：四个指定日的计划与调整购电量（kWh）及全天汇总}
+\begin{tabular}{lrrrrrrrrrrrrrr}
+\toprule
+ & \multicolumn{6}{c}{计划购电量 $g$} & \multicolumn{6}{c}{调整购电量 $a$} & \multicolumn{2}{c}{全天量 $g/a$} \\
+\cmidrule(lr){2-7}\cmidrule(lr){8-13}\cmidrule(lr){14-15}
+日期 & 10 & 12 & 14 & 16 & 18 & 20 & 10 & 12 & 14 & 16 & 18 & 20 & （kWh） & 购电费（元） \\
+\midrule
+03-20 & 0 & 543 & 0 & 553 & 681 & 0 & 0 & 543 & 0 & 553 & 686 & 0 & 65\,821/65\,763 & 42\,019 \\
+06-21 & 0 & 0 & 0 & 132 & 37 & 0 & 0 & 0 & 0 & 95 & 0 & 0 & 35\,638/35\,066 & 20\,262 \\
+09-23 & 0 & 336 & 0 & 492 & 721 & 18 & 0 & 289 & 0 & 492 & 745 & 18 & 64\,712/65\,963 & 45\,826 \\
+12-21 & 0 & 995 & 0 & 850 & 709 & 0 & 0 & 934 & 0 & 860 & 685 & 0 & 96\,024/94\,710 & 61\,823 \\
+\bottomrule
+\end{tabular}
+\label{tab:q3days}
+\end{table}
 
 \textbf{附加问：是否需要引入其他时刻的预报。}在合格基准（非预期性计划 + 冻结不调整）上逐级开放修订权：仅 0:00 报计划 13\,633\,398.76 元，开放 6:00 后降至 13\,345\,217.23 元（省 28.8 万元），再开放 12:00 降至 13\,176\,494.13 元（省 16.9 万元），全开后为交付值 13\,023\,147.06 元（再省 15.3 万元）。四级修订合计 \textbf{61.03 万元（4.48\%）}，其中 6:00 档贡献最大（图 \ref{fig:q3ladder}）。结论：需要引入 6/12/18 时的预报与修订，且越早的修订价值越大；18:00 档的信息来源主要是当日已观测负载（附件三只预报光伏）。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig16_题3修订演示-最大偏差日}
+\includegraphics[width=0.95\textwidth]{fig16_题3修订演示-最大偏差日.png}
 \caption{最大偏差日的修订演示：计划 $g$、调整 $a$ 与块锁定时刻}
 \label{fig:q3demo}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
@@ -580,9 +709,9 @@ $\Zep$ / $\ZPI$ & 12\,983\,832.24 / 12\,243\,666.87 & \\
 \label{fig:q3ladder}
 \end{figure}
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.95\textwidth]{fig17_题2与题3费用对照}
+\includegraphics[width=0.95\textwidth]{fig17_题2与题3费用对照.png}
 \caption{题二与题三费用对照：净节省 $5.25\%$ 的构成（紧急费压降 $-$ 偏差费新增）}
 \label{fig:q3q2}
 \end{figure}
@@ -619,7 +748,7 @@ $\Zep$ / $\ZPI$ & 12\,983\,832.24 / 12\,243\,666.87 & \\
 
 按题意分两条交付线：Q4-2（问题二骨架 + 波动价）与 Q4-3（问题三骨架 + 波动价），共用物理内核与执行层，各自独立滚动，全年 334 天。主结果见表 \ref{tab:q4res}：调整线较计划线再省 775\,605 元（5.37\%），与常数价下的节省幅度（5.25\%）一致，说明修订机制的价值在波动价下保持；两条线的紧急购电占比分别为 6.62\% 与 0.87\%，峰段占比 71.07\% 与 61.63\%（真缺口集中在贵时段），归因四条判定全部通过。
 
-\begin{table}[htbp]
+\begin{table}[!t]
 \centering\small
 \caption{问题四全年结果（读法 R，334 个交付日，元）}
 \begin{tabular}{lrr}
@@ -643,7 +772,7 @@ SOC 均值 / 日末（kWh） & 6\,177.6 / 10\,300.0 & 5\,951.3 / 9\,731.4 \\
 
 计划线费用较问题二（13\,745\,816 元）高 5.1\%，差额主要来自价格环境本身：附件一是附件四的全年均值，而高负荷日恰是高价日，按无条件期望规划并在实现价下结算必然偏贵——这正是“电价要不要建模”的动机。消融给出三笔账（图 \ref{fig:q4ablate}，均为 334 天、计划线）：把价格预报换成附件一典型价（不建模价格）贵 38\,948 元；终端价值退回常数 0.472 贵 19\,664 元；若 0:00 即知当日全部实现价（信息上界的读法 D）省 44\,762 元。电价建模与日内形态信息的价值量级相当（各约 0.3\%），与数据核验“形态误差 5.58\% 对水平误差 4.03\%”的判断一致。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
@@ -669,7 +798,7 @@ SOC 均值 / 日末（kWh） & 6\,177.6 / 10\,300.0 & 5\,951.3 / 9\,731.4 \\
 
 终端价值逐日化（均值 0.4610 元/kWh，区间 $[0.3528,0.5695]$，全年区间校验零违例）产生前三问不可能出现的结构（图 \ref{fig:q4week}）：日末水位按次日星期分组，次日为周五时均值 2\,594 kWh、其余日期 6\,309--6\,974 kWh——周四主动清仓、迎接低价周五，与理论预言一致。常数价下终端价值为常数，结构上不可能出现该台阶，此为逐日化的直接证据。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
@@ -692,22 +821,42 @@ SOC 均值 / 日末（kWh） & 6\,177.6 / 10\,300.0 & 5\,951.3 / 9\,731.4 \\
 \label{fig:q4week}
 \end{figure}
 
-四个指定日的结果见表 \ref{tab:q4days}（费用按实现价结算，为事后量）。
+四个指定日的结果见表 \ref{tab:q4d2} 与表 \ref{tab:q4d3}（费用按实现价结算，为事后量；两线的计划量不同，因调整线知道计划可被修订而报得更克制）。
 
-\begin{table}[htbp]
-\centering\small
-\caption{问题四四个指定日（二分二至）结果（全天购电量 kWh；全天购电费元，实现价事后结算）}
-\begin{tabular}{lrr}
+\begin{table}[!t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{问题四 Q4-2（计划线）四个指定日：指定时段计划购电量（kWh）与全天汇总}
+\begin{tabular}{lrrrrrrrr}
 \toprule
-日期 & 全天购电量 Q4-2 / Q4-3 & 全天购电费 Q4-2 / Q4-3 \\
+ & \multicolumn{6}{c}{指定时段计划购电量} & 全天购电量 & 全天购电费 \\
+\cmidrule(lr){2-7}
+日期 & 10 & 12 & 14 & 16 & 18 & 20 & （kWh） & （元） \\
 \midrule
-03-20（春分） & 58\,953.03 / 57\,890.26 & 39\,697.50 / 40\,213.26 \\
-06-21（夏至） & 43\,223.90 / 43\,178.42 & 21\,074.01 / 20\,875.89 \\
-09-23（秋分） & 63\,803.86 / 65\,805.87 & 54\,676.15 / 47\,746.03 \\
-12-21（冬至） & 93\,979.23 / 92\,543.36 & 71\,622.82 / 71\,641.03 \\
+03-20 & 0 & 683 & 0 & 474 & 0 & 702 & 58\,953 & 39\,697.50 \\
+06-21 & 0 & 0 & 0 & 136 & 412 & 0 & 43\,224 & 21\,074.01 \\
+09-23 & 0 & 435 & 0 & 495 & 0 & 18 & 63\,804 & 54\,676.15 \\
+12-21 & 0 & 908 & 0 & 840 & 731 & 0 & 93\,979 & 71\,622.82 \\
 \bottomrule
 \end{tabular}
-\label{tab:q4days}
+\label{tab:q4d2}
+\end{table}
+
+\begin{table}[!t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{问题四 Q4-3（调整线）四个指定日：计划与调整购电量（kWh）及全天汇总}
+\begin{tabular}{lrrrrrrrrrrrrrr}
+\toprule
+ & \multicolumn{6}{c}{计划购电量 $g$} & \multicolumn{6}{c}{调整购电量 $a$} & \multicolumn{2}{c}{全天量 $g/a$} \\
+\cmidrule(lr){2-7}\cmidrule(lr){8-13}\cmidrule(lr){14-15}
+日期 & 10 & 12 & 14 & 16 & 18 & 20 & 10 & 12 & 14 & 16 & 18 & 20 & （kWh） & 购电费（元） \\
+\midrule
+03-20 & 0 & 543 & 0 & 566 & 0 & 702 & 0 & 543 & 0 & 566 & 8 & 715 & 57\,890 & 40\,213.26 \\
+06-21 & 0 & 0 & 0 & 182 & 415 & 0 & 0 & 0 & 0 & 95 & 415 & 0 & 43\,178 & 20\,875.89 \\
+09-23 & 0 & 376 & 0 & 492 & 0 & 18 & 0 & 289 & 0 & 492 & 0 & 18 & 65\,806 & 47\,746.03 \\
+12-21 & 0 & 995 & 0 & 832 & 726 & 0 & 0 & 934 & 0 & 877 & 690 & 0 & 92\,543 & 71\,641.03 \\
+\bottomrule
+\end{tabular}
+\label{tab:q4d3}
 \end{table}
 
 \subsection{模型检验}
@@ -734,7 +883,7 @@ SOC 均值 / 日末（kWh） & 6\,177.6 / 10\,300.0 & 5\,951.3 / 9\,731.4 \\
   \item 日前规划的第二阶段在情景内假定“届时知道哪个情景成真”（等待型决策），是乐观近似，其精确化需要情景树结构，本文仅以“非预期性计划 + 修订权后置”规避并量化了该代价（15.1 万元）；
   \item 执行层的情景集沿用 0:00 版本、不做日内更新（诚实回测允许用当日已实现值校正），保守成分集中在真缺口一侧；
   \item “放电与弃电互补”条款在题四尚有 1\,791/1\,232 个时段未归零（等价最优顶点问题，不改现金费用），是当前唯一未过的自检；
-  \item 题三的十二组预报消融网格在修正后计划器下重跑未完成，预报层配置按机制理由选定；题四的联合对独立残差抽样对照未跑，协方差通道的量级目前由消融间接印证；
+  \item 题二的十八组网格显示换用 L2-P1-R2 可再降 0.63\%，因牵动全部数字本文未采用；题三的十二组消融网格在修正后计划器下重跑未完成，预报层配置按机制理由选定；题四的联合对独立残差抽样对照未跑，协方差通道的量级目前由价格信息消融间接印证；
   \item 调整行为中下调电量多于上调（0.53 倍），“宁存不退”的理论方向在交付解上未获验证，说明日前计划对日内预报下修的敏感性仍可改进。
 \end{enumerate}
 
@@ -768,7 +917,7 @@ SOC 均值 / 日末（kWh） & 6\,177.6 / 10\,300.0 & 5\,951.3 / 9\,731.4 \\
 \appendix
 
 \section*{附录 A\quad 支撑材料与图件}
-\begin{table}[htbp]
+\begin{table}[!t]
 \centering\small
 \caption{支撑材料清单}
 \begin{tabular}{ll}
@@ -788,9 +937,9 @@ SOC 均值 / 日末（kWh） & 6\,177.6 / 10\,300.0 & 5\,951.3 / 9\,731.4 \\
 
 附录图为题三全年修订指纹热图（图 \ref{fig:qA2}）：红色为上调、蓝色为下调，0--6 时块法定空白（无修订权），调整集中于午后可修订块。
 
-\begin{figure}[htbp]
+\begin{figure}[!t]
 \centering
-\includegraphics[width=0.9\textwidth]{figA2_题3修订指纹-红上调蓝下调-B0法定空白}
+\includegraphics[width=0.9\textwidth]{figA2_题3修订指纹-红上调蓝下调-B0法定空白.png}
 \caption{题三全年修订指纹（334 天 $\times$ 144 时段）：红 $=$ 上调，蓝 $=$ 下调，夜间块法定空白}
 \label{fig:qA2}
 \end{figure}
