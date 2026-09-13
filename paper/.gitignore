@@ -1,0 +1,6 @@
+# LaTeX 构建产物（源文件 main.tex 入库，PDF 按需重新生成）
+main.aux
+main.log
+main.out
+main.toc
+main.pdf
