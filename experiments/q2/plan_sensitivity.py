@@ -54,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--baseline", type=str,
                     default="results/q2_v6/L1-P1-R2-smpc/q2_details.csv",
                     help="基线明细 CSV（同窗口对照，缺省取 v6 交付）")
+    ap.add_argument("--out", type=str, default="",
+                    help="把窗口汇总追加写成 CSV（一行一个点）")
     return ap
 
 
@@ -109,6 +111,25 @@ def main(argv: list[str] | None = None) -> None:
               f"  ← 上升即以钱买心安，不构成改进")
     except (FileNotFoundError, KeyError, IndexError) as exc:
         print(f"\n（基线未读取：{exc}）")
+        bz = float("nan")
+
+    if args.out:
+        from pathlib import Path
+        path = Path(args.out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = pd.DataFrame([{
+            "bump": args.bump, "nu_end": args.nu_end,
+            "emerg_cap": int(emerg_cap), "lo": lo, "hi": hi,
+            "z": z, "emerg_fee": float(win.fee.sum()),
+            "u_kwh": float(win.u.sum()), "slots": int(win.slots.sum()),
+            "w_kwh": float(win.w.sum()), "soc_mean": float(win.soc.mean()),
+            "z_base": bz, "delta_pct": (z / bz - 1.0) * 100.0
+            if np.isfinite(bz) and bz else float("nan"),
+        }])
+        header = not path.exists()
+        row.to_csv(path, mode="a", header=header, index=False,
+                   float_format="%.6f")
+        print(f"已追加 {path}")
 
 
 if __name__ == "__main__":

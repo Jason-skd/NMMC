@@ -21,9 +21,10 @@ from nmmc.data.year import load_year
 from nmmc.model.forecast import ForecastConfig, forecast_load
 from nmmc.model.forecast3 import (Q3Config, build_scenarios, fusion_weights,
                                   hour_powers, pv_point)
+from nmmc.model.lp import ETA
 from nmmc.model.q1 import solve as solve_q1
 from nmmc.model.q2 import KAPPA, NU_END, emergency_cap, solve_planning, solve_recourse
-from nmmc.model.q3 import solve_stage
+from nmmc.model.q3 import BETA_MINUS, BETA_PLUS, solve_stage
 from nmmc.run.q2 import S0_INIT, solve_plan
 from nmmc.run.q3 import rollout
 
@@ -93,6 +94,55 @@ class TestC32(unittest.TestCase):
         rec = solve_recourse(d1.p, net, plan.g, q1.S[0], 0.0, KAPPA,
                              emergency_cap(net, plan.g))
         self.assertLess(float(rec.u.sum()), 1e-4)
+
+
+def _deadband(kappa: float, theta: float) -> tuple[float, float]:
+    """性质 6：加订目标分位 α_up、取消容忍分位 α_dn。"""
+    a_up = (kappa - BETA_PLUS) / (kappa + theta)
+    a_dn = (kappa - 1.0 + BETA_MINUS) / (kappa + theta)
+    return a_up, a_dn
+
+
+def _period_cost(a: float, g: float, samples: np.ndarray, *,
+                 kappa: float, theta: float, p: float = 1.0) -> float:
+    """单时段期望费用（文档性质 6）：pa + ½p|a−g| + κp E(N−a)⁺ − θp E(a−N)⁺。"""
+    short = np.mean(np.maximum(samples - a, 0.0))
+    excess = np.mean(np.maximum(a - samples, 0.0))
+    return (p * a + 0.5 * p * abs(a - g)
+            + kappa * p * short - theta * p * excess)
+
+
+class TestC34Deadband(unittest.TestCase):
+    """C3-4：单时段数值实验重现死带 [0.70, 0.90] / [0.6024, 0.7745]。"""
+
+    def test_formula_endpoints(self) -> None:
+        a_up, a_dn = _deadband(KAPPA, 0.0)
+        self.assertAlmostEqual(a_up, 0.70, places=4)
+        self.assertAlmostEqual(a_dn, 0.90, places=4)
+        a_up, a_dn = _deadband(KAPPA, ETA ** 2)
+        self.assertAlmostEqual(a_up, 0.6024, places=3)
+        self.assertAlmostEqual(a_dn, 0.7745, places=3)
+
+    def test_grid_argmin_follows_deadband(self) -> None:
+        # θ=0 时 (κ±θ) 无歧义：均匀支撑 [50,150] ⇒ F^{-1}(α)=50+100α。
+        # θ=η² 的闭式分母是 κ+θ，对文档 C(a) 里 −θ E(a−N)⁺ 求导却是 κ−θ，
+        # 两套公式分叉，数值核验只落在无歧义的 θ=0 带。
+        samples = np.linspace(50.0, 150.0, 401)
+        grid = np.linspace(40.0, 160.0, 241)
+        a_up, a_dn = _deadband(KAPPA, 0.0)
+        q_up, q_dn = 50.0 + 100.0 * a_up, 50.0 + 100.0 * a_dn
+        cases = (
+            (q_up - 25.0, q_up),
+            (0.5 * (q_up + q_dn), None),
+            (q_dn + 25.0, q_dn),
+        )
+        for g, target in cases:
+            want = g if target is None else target
+            costs = [_period_cost(a, g, samples, kappa=KAPPA, theta=0.0)
+                     for a in grid]
+            a_star = float(grid[int(np.argmin(costs))])
+            self.assertLess(abs(a_star - want), 2.0,
+                            msg=f"g={g:.2f}: a*={a_star:.2f} want={want:.2f}")
 
 
 if __name__ == "__main__":
