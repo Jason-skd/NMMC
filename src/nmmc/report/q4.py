@@ -168,10 +168,12 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         surplus += d.u[on & (net < 0.0)].sum()
     den = u_energy if u_energy > 0.0 else 1.0
     band_share = bands / den
-    # 星期台阶（性质 9）：日末水位按次日星期几分组（周五/周六 = 低价日）
+    # 星期台阶（性质 9）：日末水位按次日公历星期分组。
+    # 报告期末一天的次日可能超出附件日历，不可默认成周五
+    # （否则会把 12-31 的高水位灌进“次日周五”）。
     s144 = {g: [] for g in ("次日周五", "次日周六", "次日周一", "其他")}
     for d in rep:
-        nxt_dow = price.dow[d.j + 1] if d.j + 1 < len(price.dow) else 4
+        nxt_dow = (_py_date(d, year) + dt.timedelta(days=1)).weekday()
         key = {4: "次日周五", 5: "次日周六", 0: "次日周一"}.get(nxt_dow, "其他")
         s144[key].append(d.S[T])
     bills = [billing_price(price, typ_p, mode, d.j) for d in rep]
@@ -233,6 +235,7 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         "SOC 范围": (float(min(d.S.min() for d in rep)),
                      float(max(d.S.max() for d in rep))),
         "日末 SOC": float(rep[-1].S[T]),
+        "日末 SOC 均值": float(np.mean([d.S[T] for d in rep])),
         "星期台阶 次日周五": (float(np.mean(s144["次日周五"]))
                              if s144["次日周五"] else float("nan")),
         "星期台阶 次日周六": (float(np.mean(s144["次日周六"]))
@@ -386,8 +389,8 @@ class SummaryMd:
             ("报童保险费 Σp·w_over / 日频超买占比",
              f"{money(s['报童保险费'])} / {pct(s['日频超买占比'])}"
              f"（理论 {(s['报童分位']) * 100:.0f}%）"),
-            ("SOC 均值 / 日末", f"{s['SOC 均值']:,.1f} / "
-             f"{s['日末 SOC']:,.1f} kWh"),
+            ("SOC 均值 / 日末均值", f"{s['SOC 均值']:,.1f} / "
+             f"{s['日末 SOC 均值']:,.1f} kWh"),
         ])
         price_blk = md_table(["诊断", "数值"], [
             ("价格预报 MAE / MAPE（PR1）",

@@ -762,7 +762,7 @@ def fig21_q4_price_ladder(out_dir: Path):
 
 
 def fig19_q4_weekday_step(out_dir: Path):
-    """题 4 计划线星期台阶：日末 S144 按次日星期分组（分组同 report/q4.py）。"""
+    """题 4 计划线星期台阶：日末 S144 按次日公历星期分组（与 report/q4.py 一致）。"""
     df = pd.read_csv(Q4_42_DIR / "PR1-V2-r" / "q4-2_details.csv",
                      usecols=["date", "S144"])
     nxt = pd.to_datetime(df.date) + pd.Timedelta(days=1)
