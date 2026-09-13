@@ -14,6 +14,69 @@ from nmmc.model.lp import ETA, T
 PAPER_SLOTS = [6 * h + 1 for h in (10, 12, 14, 16, 18, 20)]  # t = 61..121
 BLOCK_LABELS = [f"{4 * k}:00-{4 * (k + 1)}:00" for k in range(6)]
 EPS_EMERG = 1e-6      # 紧急购电报表阈值，kWh
+C4_20_TOL = 0.10      # 日频超买占比相对 (κ−1)/κ 的容差（报童，电池平滑）
+NEWSVENDOR_Q = 1.0 - 1.0 / 5.0   # κ=5 ⇒ 80%
+
+
+def split_spill(w: np.ndarray, ell: np.ndarray, r: np.ndarray
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """把松弛量 w 拆成光伏不可吸纳 w_pv 与超买倒掉 w_over。
+
+    平衡式 d+u−c−w = n−g 决定 w 是供给超过需求的松弛，不是弃光量。
+    w_pv = min(w, (r−ℓ)⁺)；其余只能归给日前计划超买。
+    """
+    surplus = np.maximum(r - ell, 0.0)
+    w_pv = np.minimum(np.maximum(w, 0.0), surplus)
+    return w_pv, np.asarray(w, dtype=float) - w_pv
+
+
+def spill_metrics(days: list, year: YearData, prices: list[np.ndarray],
+                  inj: list[np.ndarray]) -> dict[str, float | int | bool]:
+    """弃光 / 超买溢出 / 报童保险费 / 放电-弃电互补性（三题共用口径）。
+
+    Args:
+        days: 报告期 DayResult（须有 c/d/w/g）。
+        year: 全年真值。
+        prices: 与 days 对齐的结算电价，各 shape (144,)。
+        inj: 与 days 对齐的计费注入（题2/4-2 为 g，题3/4-3 为 a）。
+    """
+    w_pv_sum = w_over_sum = surplus_sum = inj_sum = ins = 0.0
+    n_over = dw_slots = cw_slots = 0
+    dw_max = cw_max = 0.0
+    for day, p, a in zip(days, prices, inj):
+        ell, r = year.ell[day.j], year.r[day.j]
+        net = ell - r
+        w_pv, w_over = split_spill(day.w, ell, r)
+        w_pv_sum += float(w_pv.sum())
+        w_over_sum += float(w_over.sum())
+        surplus_sum += float(np.maximum(-net, 0.0).sum())
+        inj_sum += float(a.sum())
+        ins += float(np.asarray(p, dtype=float) @ w_over)
+        if float(a.sum()) > float(net.sum()) + 1e-6:
+            n_over += 1
+        dw_max = max(dw_max, float((day.d * day.w).max()))
+        cw_max = max(cw_max, float((day.c * day.w).max()))
+        dw_slots += int(((day.d > EPS_EMERG) & (day.w > EPS_EMERG)).sum())
+        cw_slots += int(((day.c > EPS_EMERG) & (day.w > EPS_EMERG)).sum())
+    n = max(len(days), 1)
+    over_share = n_over / n
+    return {
+        "弃光量": w_pv_sum,
+        "超买溢出量": w_over_sum,
+        "母线盈余": surplus_sum,
+        "弃光率": w_pv_sum / max(surplus_sum, 1e-9),
+        "超买溢出率": w_over_sum / max(inj_sum, 1e-9),
+        "报童保险费": ins,
+        "日频超买占比": over_share,
+        "报童分位": NEWSVENDOR_Q,
+        "C4-20 日频超买在容差内": bool(
+            abs(over_share - NEWSVENDOR_Q) <= C4_20_TOL),
+        "C4-21 max(d·w)": dw_max,
+        "C4-21 max(c·w)": cw_max,
+        "C4-21 d∧w 时段数": dw_slots,
+        "C4-21 c∧w 时段数": cw_slots,
+        "C4-21 无放电同时弃电": dw_slots == 0,
+    }
 
 
 def _hm(minutes: int) -> str:

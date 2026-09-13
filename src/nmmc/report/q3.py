@@ -17,8 +17,9 @@ from nmmc.data.year import YearData
 from nmmc.model.lp import ETA, T
 from nmmc.model.q2 import KAPPA
 from nmmc.model.q3 import beta_check
-from nmmc.report.common import (BLOCK_LABELS, PAPER_SLOTS, md_table, py_date,
-                                write_battery_sheet, write_emergency_sheet)
+from nmmc.report.common import (PAPER_SLOTS, md_table, py_date,
+                                spill_metrics, write_battery_sheet,
+                                write_emergency_sheet)
 from nmmc.report.q2 import EPS_EMERG, PAPER_DATES, WARMUP_DAYS, report_days
 from nmmc.run.q2 import CAP_TOL
 from nmmc.run.q3 import DayResult
@@ -85,6 +86,7 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray
     err_r = np.concatenate([np.abs(d.r_hat - year.r[d.j]) for d in rep])
     z_online = float(sum(d.z for d in rep))
     z_ce = float(sum(d.z_ce for d in rep))
+    spill = spill_metrics(rep, year, [p] * len(rep), [d.a for d in rep])
     return {
         "天数": len(rep),
         "Z_online": z_online,
@@ -121,6 +123,7 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray
         "弃电量合计": float(sum(d.w.sum() for d in rep)),
         "弃电率": float(sum(d.w.sum() for d in rep)
                         / max(float(year.r[[d.j for d in rep]].sum()), 1e-9)),
+        **spill,
         "SOC 均值": float(np.mean([d.S[:T] for d in rep])),
         "SOC 范围": (float(min(d.S.min() for d in rep)),
                      float(max(d.S.max() for d in rep))),
@@ -265,8 +268,11 @@ class SummaryMd:
              f"{s['偏差费占比'] * 100:.2f}%"),
             ("紧急购电费 / 占比", f"{money(s['紧急购电费合计'])} / "
              f"{s['紧急费占比'] * 100:.2f}%"),
-            ("弃电量 / 弃电率", f"{s['弃电量合计']:,.2f} kWh / "
-             f"{s['弃电率'] * 100:.2f}%"),
+            ("弃电量（松弛 Σw）", f"{s['弃电量合计']:,.2f} kWh"),
+            ("弃光量 / 弃光率（分母 = 母线盈余）",
+             f"{s['弃光量']:,.2f} kWh / {s['弃光率'] * 100:.2f}%"),
+            ("超买溢出 / 报童保险费",
+             f"{s['超买溢出量']:,.2f} kWh / {money(s['报童保险费'])}"),
             ("SOC 均值 / 范围", f"{s['SOC 均值']:,.1f} kWh / "
              f"{s['SOC 范围'][0]:,.1f} ~ {s['SOC 范围'][1]:,.1f}"),
             ("隔夜 SOC 均值", f"{s['隔夜 SOC 均值']:,.1f} kWh"),

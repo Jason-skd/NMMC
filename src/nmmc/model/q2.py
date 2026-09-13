@@ -22,6 +22,9 @@ from nmmc.model.lp import (E_MAX_PER, ETA, S_MAX, S_MIN, T, solve_eq_lp,
 
 KAPPA = 5.0    # 紧急购电倍率
 NU_END = 0.472  # 日末储电量估值锚，元/kWh（文档 §2.3）
+W_EPS = 1e-6    # 弃电微罚，元/kWh。w 在目标里系数为 0 时，求解器对
+                # 「放电后弃掉 / 充电后弃掉」与「什么都不做」无差异（C15
+                # 只堵了末时段）。相对 min p ~ 0.3 为 3×10⁻⁶，不改现金最优值。
 
 
 def emergency_cap(net: np.ndarray, g: np.ndarray) -> np.ndarray:
@@ -138,6 +141,7 @@ def solve_planning(p: np.ndarray, scn: np.ndarray, probs: np.ndarray,
         # 情景目标（π_s·κΣp^(s)·u − π_s·ν·S_144）与变量域（S_0 锚定 s0）
         pi = probs[s]
         obj[o_u:o_u + T] = pi * kappa * (p if p_scn is None else p_scn[s])
+        obj[o_w:o_w + T] = pi * W_EPS
         obj[o_s + T] = -pi * nu_end
         lo[o_c:o_c + T] = 0.0
         hi[o_c:o_c + T] = E_MAX_PER
@@ -184,9 +188,10 @@ def solve_recourse(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     blk = 5 * n_t + 1
     o_c, o_d, o_u, o_w, o_s = 0, n_t, 2 * n_t, 3 * n_t, 4 * n_t
 
-    # 目标：min κΣp·u − ν·S_end（诊断口径，非现金费用）
+    # 目标：min κΣp·u + εΣw − ν·S_end（ε 打破放电后弃掉退化，非现金）
     obj = np.zeros(blk)
     obj[o_u:o_u + n_t] = kappa * p
+    obj[o_w:o_w + n_t] = W_EPS
     obj[o_s + n_t] = -nu_end
 
     # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_start
@@ -280,8 +285,8 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     cap_now = np.inf if u_cap is None else max(net[t] - g[t], 0.0)
     if m == 0:
         # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（C15）
-        # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t − ν·S_{t+1}
-        obj = np.array([0.0, 0.0, kappa * p[t], 0.0, -nu_end])
+        # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t + ε w_t − ν·S_{t+1}
+        obj = np.array([0.0, 0.0, kappa * p[t], W_EPS, -nu_end])
         # 平衡 d+u−c−w = n_t−g_t 与 SOC 递推 S_{t+1}−ηc+d/η = S_t
         rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
         cols = [np.array([1, 2, 3, 0]), np.array([4, 0, 1])]
@@ -302,6 +307,7 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
     n = 5 + n_s * blk
     obj = np.zeros(n)
     obj[2] = kappa * p[t]                    # 当步紧急购电（g_t 已锁定，沉没）
+    obj[3] = W_EPS                           # 当步弃电微罚（C15 推广到全时段）
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
     hi[0] = hi[1] = E_MAX_PER                # 当步 c / d 功率上限
@@ -323,6 +329,7 @@ def solve_stochastic_step(p: np.ndarray, net: np.ndarray, g: np.ndarray,
         pi = float(probs[s])
         obj[o_u:o_u + m] = pi * kappa * (p[t + 1:] if p_scn is None
                                          else p_scn[s, t + 1:])
+        obj[o_w:o_w + m] = pi * W_EPS
         obj[o_s + m] = -pi * nu_end
         hi[o_c:o_c + m] = E_MAX_PER
         hi[o_d:o_d + m] = E_MAX_PER

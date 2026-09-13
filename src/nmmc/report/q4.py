@@ -8,6 +8,7 @@
 ν^end^(365)（C4-15，不是常数 0.472）。
 """
 import datetime as dt
+import re
 from pathlib import Path
 
 import numpy as np
@@ -18,45 +19,32 @@ from scipy.stats import skew
 from nmmc.data import ATTACH
 from nmmc.data.price import YearPrice
 from nmmc.data.year import YearData
-from nmmc.model.lp import E_MAX_PER, ETA, S_MIN, T
+from nmmc.model.lp import ETA, T
 from nmmc.model.q2 import KAPPA
 from nmmc.report.common import (PAPER_SLOTS, md_table, py_date,
+                                spill_metrics, split_spill,
                                 write_battery_sheet, write_emergency_sheet)
-from nmmc.report.q2 import EPS_EMERG, PRICE_BANDS, PAPER_DATES, report_days
-from nmmc.run.q2 import CAP_TOL
+from nmmc.report.q2 import (ATTR_LABELS, EPS_EMERG, PAPER_DATES, PRICE_BANDS,
+                            attribute_emergency, report_days)
 from nmmc.run.q4 import DayResult
 
 TEMPLATE_42 = ATTACH / "附件5" / "result4-2.xlsx"
 TEMPLATE_43 = ATTACH / "附件5" / "result4-3.xlsx"
 SOC_EPS = 1e-6        # 对账容差（兼"储能耗尽"判定容差），kWh
 
-# 紧急购电归因（题4 档 §7.6 四分类，hjc 原实现本地化）：③不分囤电/配给。
-# v7 对齐后默认带上界（u ≤ (n−x)⁺），③囤电结构上恒 0、只剩配给型 ③b，
-# 四分类标签在两种口径下均无需改动。
-SOC_RICH = 3000.0     # ③"有电不放"的水位判据，kWh
-ATTR_LABELS = {1: "①功率强制", 2: "②储能耗尽", 3: "③有电不放", 4: "④低水位带"}
-
-
-def attribute_emergency(u: np.ndarray, S: np.ndarray, net: np.ndarray,
-                        g: np.ndarray, *,
-                        soc_rich: float = SOC_RICH) -> np.ndarray:
-    """逐时段互斥归因码（题4 无上界口径）：①功率强制 ②储能耗尽
-    ③有电不放（S_{t−1} > 3000 且非①）④低水位带；0 = 无紧急购电。"""
-    code = np.zeros(T, dtype=int)
-    on = u > EPS_EMERG
-    forced = net - g > E_MAX_PER + EPS_EMERG
-    empty = S[:-1] <= S_MIN + SOC_EPS
-    rich = S[:-1] > soc_rich
-    code[on & forced] = 1
-    code[on & ~forced & empty] = 2
-    code[on & ~forced & ~empty & rich] = 3
-    code[on & ~forced & ~empty & ~rich] = 4
-    return code
-
 
 def _py_date(day: DayResult, year: YearData) -> dt.date:
     """DayResult 的 0 基日索引转 Python 日期（common.py 的便捷包装）。"""
     return py_date(day.j, year)
+
+
+def adjusted_cost(z: float, nu: float, s144: float) -> float:
+    """ν 调整费用 Z̃ = Z^cash − ν·S_144（C9 比较口径）。
+
+    各臂优化的是带末端估值的目标，现金口径会把「把便宜电买成库存」
+    判成 PI 劣于事后最优——波动价下的假阳性。
+    """
+    return float(z - nu * s144)
 
 
 def billing_price(price: YearPrice, typ_p: np.ndarray, mode: str,
@@ -101,9 +89,13 @@ def day_checks(day: DayResult, year: YearData) -> dict[str, float | int]:
     losses = (1 - ETA) * day.c.sum() + (1 / ETA - 1) * day.d.sum()
     c7 = abs((supply + day.u - net - day.w).sum() - (d_soc + losses))
     tol = 1e-4
-    bad_order = int(day.z_pi > day.z_expost + tol
-                    or day.z_expost > day.z + tol
-                    or day.z_expost > day.z_ce + tol)
+    za = adjusted_cost(day.z, day.nu_end, day.S[T])
+    za_ce = adjusted_cost(day.z_ce, day.nu_end, day.s_ce)
+    za_xp = adjusted_cost(day.z_expost, day.nu_end, day.s_expost)
+    za_pi = adjusted_cost(day.z_pi, day.nu_end, day.s_pi)
+    bad_order = int(za_pi > za_xp + tol
+                    or za_xp > za + tol
+                    or za_xp > za_ce + tol)
     prefix = 0.0 if day.a is None else float(np.abs(day.a[:36] - day.g[:36]).max())
     return {
         "c6": float(abs(bat - d_soc)),
@@ -111,6 +103,8 @@ def day_checks(day: DayResult, year: YearData) -> dict[str, float | int]:
         "prefix": prefix,
         "cd_max": float((day.c * day.d).max()),
         "uw_max": float((day.u * day.w).max()),
+        "dw_max": float((day.d * day.w).max()),
+        "cw_max": float((day.c * day.w).max()),
         "u_and_c": int(((day.u > EPS_EMERG) & (day.c > EPS_EMERG)).sum()),
         "c9_bad": bad_order,
     }
@@ -156,7 +150,7 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
     # 紧急购电归因 / 电价分段 / 光伏盈余（§7.6，按紧急电量加权；电价分段
     # 用当日结算价——实现价，a1 退化为附件1 常数价）
     u_energy = float(u_all.sum())
-    attr = np.zeros(5)
+    attr = np.zeros(6)
     bands = np.zeros(len(PRICE_BANDS))
     surplus = 0.0
     for d in rep:
@@ -164,8 +158,9 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         if not on.any():
             continue
         net = year.ell[d.j] - year.r[d.j]
-        code = attribute_emergency(d.u, d.S, net, d.g)
-        for k in range(1, 5):
+        inj = d.g if d.a is None else d.a
+        code = attribute_emergency(d.u, d.S, net, inj)
+        for k in range(1, 6):
             attr[k] += d.u[code == k].sum()
         pj = billing_price(price, typ_p, mode, d.j)
         for i, (_, lo, hi) in enumerate(PRICE_BANDS):
@@ -179,6 +174,9 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         nxt_dow = price.dow[d.j + 1] if d.j + 1 < len(price.dow) else 4
         key = {4: "次日周五", 5: "次日周六", 0: "次日周一"}.get(nxt_dow, "其他")
         s144[key].append(d.S[T])
+    bills = [billing_price(price, typ_p, mode, d.j) for d in rep]
+    inj = [d.g if d.a is None else d.a for d in rep]
+    spill = spill_metrics(rep, year, bills, inj)
     return {
         "天数": len(rep),
         "Z_online": z_online,
@@ -204,9 +202,7 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         "C4-14 max(u·w)": float(max(c["uw_max"] for c in checks)),
         "C4-14 u∧c 时段数": int(sum(c["u_and_c"] for c in checks)),
         "C9 序关系违例天数": int(sum(c["c9_bad"] for c in checks)),
-        "C4-16 上界收敛残差 max": float(max(d.cap_resid for d in rep)),
-        "C4-16 序列线性化轮数 max": int(max(d.cap_iters for d in rep)),
-        "C4-16 未收敛天数": int(sum(d.cap_resid > CAP_TOL for d in rep)),
+        "C9 口径": "ν 调整（Z̃ = Z − ν·S_144^arm）",
         "日费用偏度": float(skew(z_day)),
         "日费用 P95/中位": float(np.quantile(z_day, 0.95) / np.median(z_day)),
         "紧急购电天数": int((u_all > EPS_EMERG).any(axis=1).sum()),
@@ -217,18 +213,22 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         "紧急费占比": float(sum(emerg_fee) / z_online),
         "归因①功率强制占比": float(attr[1] / den),
         "归因②储能耗尽占比": float(attr[2] / den),
-        "归因③有电不放占比": float(attr[3] / den),
-        "归因④低水位带占比": float(attr[4] / den),
+        "归因③a囤电型占比": float(attr[3] / den),
+        "归因③b配给型占比": float(attr[4] / den),
+        "归因④低水位带占比": float(attr[5] / den),
         "紧急购电谷段占比": float(band_share[0]),
         "紧急购电平段占比": float(band_share[1]),
         "紧急购电峰段占比": float(band_share[2]),
         "紧急购电盈余时段占比": float(surplus / den),
-        "C4-19 ③为少数": bool(attr[3] / den < 0.5),
-        "C4-19 峰段高于谷段": bool(band_share[2] > band_share[0]),
-        "C4-19 盈余近零": bool(surplus / den <= 0.05),
+        "C4-19a 囤电型近零": bool(attr[3] / den <= 0.10),
+        "C4-19b 峰段高于谷段": bool(band_share[2] > band_share[0]),
+        "C4-19c 盈余近零": bool(surplus / den <= 0.05),
+        "C4-19d 无紧急购电同时充电": bool(
+            sum(c["u_and_c"] for c in checks) == 0),
         "弃电量合计": float(sum(d.w.sum() for d in rep)),
         "弃电率": float(sum(d.w.sum() for d in rep)
                         / max(float(year.r[[d.j for d in rep]].sum()), 1e-9)),
+        **spill,
         "SOC 均值": float(np.mean([d.S for d in rep])),
         "SOC 范围": (float(min(d.S.min() for d in rep)),
                      float(max(d.S.max() for d in rep))),
@@ -240,6 +240,28 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         "星期台阶 次日周一": (float(np.mean(s144["次日周一"]))
                              if s144["次日周一"] else float("nan")),
         "星期台阶 其他": float(np.mean(s144["其他"])),
+    }
+
+
+def _swap_price_mode(label: str, src: str, dst: str) -> str | None:
+    """把配置标签里的价格口径 r/d/a1 换成对照口径。"""
+    m = re.search(r"-(r|d|a1)(?=-|$)", label)
+    if not m or m.group(1) != src:
+        return None
+    return label[:m.start()] + "-" + dst + label[m.end():]
+
+
+def read_mode_gap(r_csv: Path, d_csv: Path) -> dict[str, float | int]:
+    """读法 D 对读法 R 的逐日差（同期合计上界，非逐日上界）。"""
+    r = pd.read_csv(r_csv)
+    d = pd.read_csv(d_csv)
+    m = r.merge(d, on="date", suffixes=("_r", "_d"))
+    delta = m["z_online_d"] - m["z_online_r"]
+    return {
+        "天数": int(len(m)),
+        "D−R 年度": float(delta.sum()),
+        "D 更差天数": int((delta > 1.0).sum()),
+        "D−R 中位数": float(delta.median()),
     }
 
 
@@ -299,6 +321,7 @@ class DetailsCsv:
         rows = []
         for day in report_days(days):
             pj = billing_price(price, typ_p, mode, day.j)
+            w_pv, w_over = split_spill(day.w, year.ell[day.j], year.r[day.j])
             rows.append({
                 "date": str(_py_date(day, year)),
                 "z_online": day.z, "z_ce": day.z_ce,
@@ -313,7 +336,12 @@ class DetailsCsv:
                 "u_sum": float(day.u.sum()),
                 "emerg_fee": float(KAPPA * (pj @ day.u)),
                 "w_sum": float(day.w.sum()),
+                "w_pv": float(w_pv.sum()),
+                "w_over": float(w_over.sum()),
                 "S0": float(day.S[0]), "S144": float(day.S[T]),
+                "S144_ce": float(day.s_ce),
+                "S144_expost": float(day.s_expost),
+                "S144_pi": float(day.s_pi),
             })
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{prefix}_details.csv"
@@ -343,15 +371,21 @@ class SummaryMd:
             ("Z^CE（确定性等价对照）", money(s["Z_ce"])),
             ("执行层增益 Z^CE−Z^online", money(s["执行层增益"])),
             ("Z^ex-post", money(s["Z_expost"])),
-            ("Z^PI", money(s["Z_pi"])),
+            ("Z^PI|arm（同 S_0 诊断下界，非跨臂公共量）", money(s["Z_pi"])),
             ("EVPI", money(s["EVPI"])),
             ("Z^adj（年末 SOC 修正，逐日 ν）", money(s["Z_adj 年末修正"])),
             ("日费用偏度 / P95÷中位（性质 10）",
              f"{s['日费用偏度']:.2f} / {s['日费用 P95/中位']:.2f}"),
             ("紧急购电费 / 占比", f"{money(s['紧急购电费合计'])} / "
              f"{pct(s['紧急费占比'])}"),
-            ("弃电量 / 弃电率", f"{s['弃电量合计']:,.2f} kWh / "
-             f"{pct(s['弃电率'])}"),
+            ("弃电量（松弛 Σw）", f"{s['弃电量合计']:,.2f} kWh"),
+            ("弃光量 / 弃光率（分母 = 母线盈余 (r−ℓ)⁺）",
+             f"{s['弃光量']:,.2f} kWh / {pct(s['弃光率'])}"),
+            ("超买溢出 / 占计划",
+             f"{s['超买溢出量']:,.2f} kWh / {pct(s['超买溢出率'])}"),
+            ("报童保险费 Σp·w_over / 日频超买占比",
+             f"{money(s['报童保险费'])} / {pct(s['日频超买占比'])}"
+             f"（理论 {(s['报童分位']) * 100:.0f}%）"),
             ("SOC 均值 / 日末", f"{s['SOC 均值']:,.1f} / "
              f"{s['日末 SOC']:,.1f} kWh"),
         ])
@@ -367,14 +401,28 @@ class SummaryMd:
              f"其他 {s['星期台阶 其他']:,.0f} kWh"),
             ("C4-8 ν 区间违例天数", s["C4-8 ν 区间违例天数"]),
         ])
+        def _fmt(k):
+            v = s[k]
+            if isinstance(v, float):
+                return "—" if not np.isfinite(v) else f"{v:.6f}"
+            return v
+        dw = s["C4-21 max(d·w)"]
+        dw_txt = "—" if not np.isfinite(dw) else f"{dw:.4g}"
         checks = md_table(["检查项", "数值"], [
-            (k, f"{s[k]:.6f}" if isinstance(s[k], float) else s[k])
+            (k, _fmt(k))
             for k in ("C4-4 结算价残差 max", "C4-14 前缀偏差 max",
                       "C6 对账残差 max", "C7 能量守恒残差 max",
                       "C4-14 max(c·d)", "C4-14 max(u·w)",
                       "C4-14 u∧c 时段数", "C9 序关系违例天数",
-                      "C4-16 上界收敛残差 max", "C4-16 序列线性化轮数 max",
-                      "C4-16 未收敛天数")])
+                      "C4-21 max(d·w)", "C4-21 d∧w 时段数")])
+        c20 = md_table(["条款", "判定", "实测"], [
+            ("C4-20 日频超买占比 ∈ [1−1/κ ± 0.10]",
+             "过" if s["C4-20 日频超买在容差内"] else "**不过**",
+             f"{pct(s['日频超买占比'])} vs 理论 {pct(s['报童分位'])}"),
+            ("C4-21 无放电同时弃电（d∧w=0）",
+             "过" if s["C4-21 无放电同时弃电"] else "**不过**",
+             f"{s['C4-21 d∧w 时段数']} 个时段，max(d·w)={dw_txt}"),
+        ])
         emerg = md_table(["统计量", "数值"], [
             ("发生天数 / 时段数", f"{s['紧急购电天数']} / {s['天数']} 天，"
              f"{s['紧急购电时段数']} 个时段（频率 {pct(s['缺口时段频率'])}）"),
@@ -385,15 +433,21 @@ class SummaryMd:
                     PRICE_BANDS))),
             ("光伏盈余时段占比", pct(s["紧急购电盈余时段占比"])),
         ] + [(ATTR_LABELS[k], pct(s[f"归因{ATTR_LABELS[k]}占比"]))
-             for k in range(1, 5)])
+             for k in range(1, 6)])
         c19 = md_table(["条款（判定性）", "判定", "实测"], [
-            ("③有电不放为少数", "过" if s["C4-19 ③为少数"] else "**不过**",
-             pct(s["归因③有电不放占比"])),
-            ("峰段占比高于谷段", "过" if s["C4-19 峰段高于谷段"] else "**不过**",
+            ("③a 囤电型近零（≤10%）",
+             "过" if s["C4-19a 囤电型近零"] else "**不过**",
+             pct(s["归因③a囤电型占比"])),
+            ("峰段占比高于谷段",
+             "过" if s["C4-19b 峰段高于谷段"] else "**不过**",
              f"峰 {pct(s['紧急购电峰段占比'])} vs "
              f"谷 {pct(s['紧急购电谷段占比'])}"),
-            ("盈余时段占比近零", "过" if s["C4-19 盈余近零"] else "**不过**",
+            ("盈余时段占比近零",
+             "过" if s["C4-19c 盈余近零"] else "**不过**",
              pct(s["紧急购电盈余时段占比"])),
+            ("u∧c = 0（性质 8′）",
+             "过" if s["C4-19d 无紧急购电同时充电"] else "**不过**",
+             s["C4-14 u∧c 时段数"]),
         ])
         tab_rows = []
         for date in PAPER_DATES:
@@ -411,6 +465,34 @@ class SummaryMd:
                  + ([] if self.line == "4-2" else
                     [f"调整 t={t}" for t in PAPER_SLOTS])
                  + ["全天购电量", "全天购电费"])
+        gap_blk = ""
+        if self.mode in ("r", "d"):
+            other = "d" if self.mode == "r" else "r"
+            sib = _swap_price_mode(self.cfg_label, self.mode, other)
+            if sib is not None:
+                r_name = sib if self.mode == "d" else self.cfg_label
+                d_name = self.cfg_label if self.mode == "d" else sib
+                r_csv = out_dir.parent / r_name / f"{prefix}_details.csv"
+                d_csv = out_dir.parent / d_name / f"{prefix}_details.csv"
+                if r_csv.exists() and d_csv.exists():
+                    r_cols = set(pd.read_csv(r_csv, nrows=0).columns)
+                    d_cols = set(pd.read_csv(d_csv, nrows=0).columns)
+                    # 旧 D 臂缺 S144_ce，与本批 R 不是同期模型，跳过以免混口径
+                    if "S144_ce" not in r_cols or r_cols != d_cols:
+                        g = None
+                    else:
+                        g = read_mode_gap(r_csv, d_csv)
+                else:
+                    g = None
+                if g is not None:
+                    gap_blk = "\n## 读法 D vs R（同期合计上界，非逐日上界）\n\n" + (
+                        md_table(["指标", "数值"], [
+                            ("配对天数", g["天数"]),
+                            ("Z^D − Z^R 年度", money(g["D−R 年度"])),
+                            ("D 更差天数",
+                             f"{g['D 更差天数']} / {g['天数']}"),
+                            ("Z^D − Z^R 中位数", money(g["D−R 中位数"])),
+                        ])) + "\n"
         text = f"""# 问题 {self.line} 求解结果（{self.cfg_label}）
 
 ## 费用分层（报告期 {s['天数']} 天，价格口径 = {self.mode}）
@@ -420,10 +502,12 @@ class SummaryMd:
 ## 价格诊断（题4 档 §12.4）
 
 {price_blk}
-
+{gap_blk}
 ## 自检（文档 §13）
 
 {checks}
+
+{c20}
 
 ## 紧急购电统计与归因（C4-19）
 
@@ -437,18 +521,21 @@ class SummaryMd:
 
 ## 计算口径
 
-- 读法 {self.mode}：{"r = 附件4 实现价按日解锁，0:00 只见预报价（A18 主交付）" if self.mode == "r" else "d = 0:00 已知当日实现价（诊断上界 Z^D）" if self.mode == "d" else "a1 = 附件1 常数价退化（C4-2 复现口径，应逐日复现题" + ("2" if self.line == "4-2" else "3") + "）"}。
+- 读法 {self.mode}：{"r = 附件4 实现价按日解锁，0:00 只见预报价（A18 主交付）" if self.mode == "r" else "d = 0:00 已知当日实现价（诊断对照 Z^D：同期合计上界，非逐日上界）" if self.mode == "d" else "a1 = 附件1 常数价退化（C4-2 复现口径，应逐日复现题" + ("2" if self.line == "4-2" else "3") + "）"}。
 - 计划购电费期望按性质 2 折叠为情景均值 p̂ 计价；紧急项逐情景计价（价格
   不确定性只经协方差通道进入目标）。
 - 执行层当步用实现价（交易时刻电价）、未来分支用情景价；结算一律实现价
   （C4-4）。
-- 紧急购电口径与题2 v6 / 题3 v7 同款：u ≤ (n−g)⁺（4-2）/ u ≤ (n−a)⁺
-  （4-3），0:00 规划层序列线性化到不动点（C4-16）；--no-emerg-cap 退回
-  v5 无上界（口径消融）。
 - ν^end 逐日标定（V2 默认：次日预报价循环 LP 对偶，零超参数）；年末
   SOC 修正用 ν^end^(365)，非 0.472（C4-15）。
 - 「全天购电费」为事后结算量：0:00 承诺电量 g、单价待实现（A23）；
   计划表费列 = 名义计划费 Σp·g{"" if self.line == "4-2" else "，调整表费列 = 实际结算购电费 Σ[p·a + ½p|a−g|]（含偏差、不含紧急）"}——口径不同，分别声明。
+- C9 用 ν 调整量 Z̃ = Z^cash − ν^end·S_144^arm（各臂用自己的日末 SOC）；
+  现金口径在波动价下会把 PI 囤库存判成违例。
+- Z^PI 是给定该臂 S_0 的逐日诊断，记 Z^{{PI|arm}}；两线独立 SOC 链（A26），
+  跨臂 Z^PI 不可比。
+- w 是平衡松弛（供给超过需求），拆成弃光 w_pv = min(w,(r−ℓ)⁺) 与超买
+  溢出 w_over；弃光率分母是母线盈余，不是光伏发电量 Σr。
 - 充放电量按电池侧填报（ηc、d/η）；紧急购电按极大连续段合并（ε=10⁻⁶ kWh）。
 - 暖机期 1 月完整滚动但不计入报告；跨日以真实路径 SOC 链衔接；两线独立滚动（A26）。
 """

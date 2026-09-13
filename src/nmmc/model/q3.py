@@ -29,7 +29,7 @@ import numpy as np
 
 from nmmc.model.lp import (E_MAX_PER, ETA, S_MAX, S_MIN, T, solve_eq_lp,
                            soc_recursion)
-from nmmc.model.q2 import StepResult
+from nmmc.model.q2 import StepResult, W_EPS
 
 BETA_MINUS = 0.5        # 违约倍率 β⁻（计划高于调整的部分，文档 §2.3）
 BETA_PLUS = 1.5         # 加价倍率 β⁺（调整高于计划的部分）
@@ -194,6 +194,7 @@ def solve_stage(p: np.ndarray, g: np.ndarray | None, committed: np.ndarray | Non
         # 0 ≤ c,d ≤ E_MAX_PER；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_anchor
         obj[o_u:o_u + nh] = pi * kappa * (p[h0:] if p_scn is None
                                           else p_scn[s, h0:])
+        obj[o_w:o_w + nh] = pi * W_EPS
         obj[o_st + nh] = -pi * nu_end
         hi[o_c:o_c + nh] = E_MAX_PER
         hi[o_d:o_d + nh] = E_MAX_PER
@@ -267,7 +268,7 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     # 末时段：无未来分支，末端估值直接挂共享 S_{t+1}（继承题2 档 C15）
     # 变量布局 x = [c, d, u, w, S_{t+1}]；目标 = κp_t·u_t − ν·S_{t+1}
     if m == 0:
-        obj = np.array([0.0, 0.0, kappa * p[t], 0.0, -nu_end])
+        obj = np.array([0.0, 0.0, kappa * p[t], W_EPS, -nu_end])
         # 平衡 d+u−c−w = n_t−a_t（a_t 恒锁定，移右端）与
         # SOC 递推 S_{t+1}−ηc+d/η = S_t
         rows = [np.array([0, 0, 0, 0]), np.array([1, 1, 1])]
@@ -295,6 +296,7 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     #            S^s(m+1)]（wait-and-see，S^s[0] 锚定共享 S_{t+1}）
     obj = np.zeros(n)
     obj[2] = kappa * p[t]                    # 当步紧急购电（a_t 已锁定，沉没）
+    obj[3] = W_EPS                           # 当步弃电微罚（继承题2 C15 推广）
     lo = np.zeros(n)
     hi = np.full(n, np.inf)
     hi[0] = hi[1] = E_MAX_PER                # 当步 c / d 功率上限
@@ -325,6 +327,7 @@ def solve_step(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
         obj[o_dmf:o_dmf + n_ff] = pi * 0.5 * p_free
         obj[o_u:o_u + m] = pi * kappa * (p[t + 1:] if p_scn is None
                                          else p_scn[s, t + 1:])
+        obj[o_w:o_w + m] = pi * W_EPS
         obj[o_st + m] = -pi * nu_end
         hi[o_c:o_c + m] = E_MAX_PER
         hi[o_d:o_d + m] = E_MAX_PER
@@ -411,6 +414,7 @@ def solve_tail(p: np.ndarray, net: np.ndarray, committed: np.ndarray,
     # 目标：min κΣp·u + Σ_free[p·af + ½p·(δ+ + δ−)] − ν·S_end
     obj = np.zeros(n)
     obj[o_u:o_u + n_t] = kappa * p
+    obj[o_w:o_w + n_t] = W_EPS
     obj[o_st + n_t] = -nu_end
 
     # 变量域：0 ≤ c,d ≤ E_MAX_PER；u,w ≥ 0；S ∈ [S_MIN, S_MAX]，S_0 锚定 s_start

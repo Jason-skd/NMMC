@@ -17,7 +17,7 @@ from nmmc.data.year import YearData
 from nmmc.model.lp import E_MAX_PER, ETA, S_MIN, T
 from nmmc.model.q2 import KAPPA
 from nmmc.report.common import (EPS_EMERG, PAPER_SLOTS, md_table,
-                                py_date, write_battery_sheet,
+                                py_date, spill_metrics, write_battery_sheet,
                                 write_emergency_sheet)
 from nmmc.run.q2 import CAP_TOL, DayResult
 
@@ -154,6 +154,7 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray) -> dict:
         surplus += d.u[on & (net < 0.0)].sum()
     den = u_energy if u_energy > 0.0 else 1.0
     band_share = bands / den
+    spill = spill_metrics(rep, year, [p] * len(rep), [d.g for d in rep])
     return {
         "天数": len(rep),
         "Z_online": z_online,
@@ -196,6 +197,7 @@ def summarize(days: list[DayResult], year: YearData, p: np.ndarray) -> dict:
         "弃电量合计": float(sum(d.w.sum() for d in rep)),
         "弃电率": float(sum(d.w.sum() for d in rep)
                         / max(float(year.r[[d.j for d in rep]].sum()), 1e-9)),
+        **spill,
         "SOC 均值": float(np.mean([d.S for d in rep])),
         "SOC 范围": (float(min(d.S.min() for d in rep)),
                      float(max(d.S.max() for d in rep))),
@@ -300,8 +302,11 @@ class SummaryMd:
             ("实时信息损失", money(s["实时信息损失"])),
             ("紧急购电费 / 占比", f"{money(s['紧急购电费合计'])} / "
              f"{pct(s['紧急费占比'])}"),
-            ("弃电量 / 弃电率", f"{s['弃电量合计']:,.2f} kWh / "
-             f"{pct(s['弃电率'])}"),
+            ("弃电量（松弛 Σw）", f"{s['弃电量合计']:,.2f} kWh"),
+            ("弃光量 / 弃光率（分母 = 母线盈余）",
+             f"{s['弃光量']:,.2f} kWh / {pct(s['弃光率'])}"),
+            ("超买溢出 / 报童保险费",
+             f"{s['超买溢出量']:,.2f} kWh / {money(s['报童保险费'])}"),
             ("SOC 均值 / 范围", f"{s['SOC 均值']:,.1f} kWh / "
              f"{s['SOC 范围'][0]:,.1f} ~ {s['SOC 范围'][1]:,.1f}"),
             ("日末 SOC", f"{s['日末 SOC']:,.1f} kWh"),

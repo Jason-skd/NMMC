@@ -8,9 +8,10 @@
     uv run prob4 --line 4-3 --price-mode a1       # C4-2 复现：应逐日复现题3
     uv run prob4 --line 4-2 --price-mode d        # 读法 D 诊断（Z^D 上界）
     uv run prob4 --line 4-2 --price PR0           # 电价建模价值消融（Z^PR0）
+    uv run prob4 --line 4-2 --nu-rule V0              # PR1-V0：拆开价格预报 vs 逐日 ν
     uv run prob4 --line 4-2 --nu-rule V1 --gamma 0.6   # ν 标定对照臂
     uv run prob4 --line 4-3 --epochs 0,6,12       # 逐级增量（继承题3 §12.2）
-    uv run prob4 --line 4-2 --no-emerg-cap        # 口径消融：退回 v5 无上界
+    uv run prob4 --no-emerg-cap                   # 口径消融：退回 v5 无上界
 """
 import argparse
 from pathlib import Path
@@ -76,8 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=parse_epochs, default=(0, 1, 2, 3),
                         help="行使修订权的时刻（小时，含 0 子集），仅 4-3 线")
     parser.add_argument("--no-emerg-cap", action="store_true",
-                        help="紧急购电口径消融：退回 v5 无上界（与题2/题3 "
-                             "--no-emerg-cap 同款，标签加 -nocap）")
+                        help="口径消融：紧急购电退回 v5 无上界")
     return parser
 
 
@@ -96,14 +96,14 @@ def main(argv: list[str] | None = None) -> None:
         label += "-E" + "-".join(str(6 * m) for m in args.epochs)
     if args.no_emerg_cap:
         label += "-nocap"
+    emerg_cap = not args.no_emerg_cap
     nu_hint = (f"ν = 0.472（a1 强制）" if args.price_mode == "a1"
                else f"ν 规则 = {cfgp.nu_rule}"
                + (f"（γ = {cfgp.gamma:g}）" if cfgp.nu_rule == "V1" else ""))
-    emerg_cap = not args.no_emerg_cap
     print(f"问题 {args.line}，配置 {label}，价格口径 = {args.price_mode}，"
           f"{nu_hint}，κ = {KAPPA:g}，滚动 {args.days} 天"
-          f"（暖机 {WARMUP_DAYS} 天）")
-    print(f"紧急购电口径 {'u ≤ (n−g)⁺ / (n−a)⁺（题2 v6 / 题3 v7 同款）' if emerg_cap else '无上界（v5）'}")
+          f"（暖机 {WARMUP_DAYS} 天），"
+          f"紧急购电口径 {'u ≤ (n−x)⁺' if emerg_cap else '无上界（v5）'}")
 
     if args.line == "4-2":
         cfg = ForecastConfig(seed=args.seed)
@@ -136,9 +136,18 @@ def main(argv: list[str] | None = None) -> None:
     for key in ("C4-4 结算价残差 max", "C4-14 前缀偏差 max", "C6 对账残差 max",
                 "C7 能量守恒残差 max", "C4-14 max(c·d)", "C4-14 max(u·w)",
                 "C4-14 u∧c 时段数", "C9 序关系违例天数",
-                "C4-16 上界收敛残差 max", "C4-16 序列线性化轮数 max",
-                "C4-16 未收敛天数", "C4-8 ν 区间违例天数"):
+                "C4-8 ν 区间违例天数", "C4-21 d∧w 时段数"):
         print(f"  {key}: {summary[key]}")
+    print(f"  C4-20 日频超买: {'过' if summary['C4-20 日频超买在容差内'] else '不过'}"
+          f"（{summary['日频超买占比'] * 100:.1f}% vs 理论 "
+          f"{summary['报童分位'] * 100:.0f}%）")
+    print(f"  C4-21 无放电同时弃电: "
+          f"{'过' if summary['C4-21 无放电同时弃电'] else '不过'}")
+    print("== 弃电拆项 ==")
+    print(f"  松弛 Σw {summary['弃电量合计']:,.1f} kWh；"
+          f"弃光 {summary['弃光量']:,.1f}（{summary['弃光率'] * 100:.2f}% / 盈余）；"
+          f"超买 {summary['超买溢出量']:,.1f}（{summary['超买溢出率'] * 100:.2f}% / 计划）；"
+          f"报童保险费 {summary['报童保险费']:,.2f} 元")
     print("== 紧急购电 ==")
     print(f"  天数 {summary['紧急购电天数']}/{summary['天数']}，"
           f"时段数 {summary['紧急购电时段数']}"
@@ -152,10 +161,12 @@ def main(argv: list[str] | None = None) -> None:
           f"光伏盈余时段 {summary['紧急购电盈余时段占比'] * 100:.2f}%")
     print(f"  归因：① {summary['归因①功率强制占比'] * 100:.2f}% / "
           f"② {summary['归因②储能耗尽占比'] * 100:.2f}% / "
-          f"③ {summary['归因③有电不放占比'] * 100:.2f}% / "
+          f"③a {summary['归因③a囤电型占比'] * 100:.2f}% / "
+          f"③b {summary['归因③b配给型占比'] * 100:.2f}% / "
           f"④ {summary['归因④低水位带占比'] * 100:.2f}%")
     print("== C4-19 归因健康度 ==")
-    for key in ("C4-19 ③为少数", "C4-19 峰段高于谷段", "C4-19 盈余近零"):
+    for key in ("C4-19a 囤电型近零", "C4-19b 峰段高于谷段",
+                "C4-19c 盈余近零", "C4-19d 无紧急购电同时充电"):
         print(f"  {key}: {'过' if summary[key] else '不过'}")
 
     adjusted = args.line == "4-3"
@@ -163,14 +174,17 @@ def main(argv: list[str] | None = None) -> None:
     filename = f"result{args.line}.xlsx"
     prefix = "q4" + args.line[1:]                  # q4-2 / q4-3
     out_dir = args.output_dir / args.line / label
-    exports = (
+    exports = [
         Result4Xlsx(template, filename, adjusted).export(
             days, year, price, out_dir, mode=args.price_mode, typ_p=day1.p),
         DetailsCsv().export(days, year, price, out_dir, prefix=prefix,
                             mode=args.price_mode, typ_p=day1.p),
-        SummaryMd(label, summary, args.price_mode, args.line).export(
-            days, year, price, out_dir, prefix=prefix),
-    )
+    ]
+    try:
+        exports.append(SummaryMd(label, summary, args.price_mode, args.line)
+                       .export(days, year, price, out_dir, prefix=prefix))
+    except Exception as exc:
+        print(f"摘要 markdown 导出失败（xlsx/csv 已写出）: {exc}")
     for path in exports:
         print(f"已导出 {path}")
 
