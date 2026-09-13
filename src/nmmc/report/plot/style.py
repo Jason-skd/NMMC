@@ -22,6 +22,7 @@ import numpy as np
 from matplotlib import patheffects
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
+from matplotlib.text import Text
 
 from nmmc.model.lp import T
 
@@ -64,31 +65,56 @@ def style_ax(ax, title: str, ylabel: str) -> None:
         lbl.set_color(INK2)
 
 
+# 压在曲线 / 色块上的标注：浅底描边，避免和数据抢像素
+HALO = [patheffects.withStroke(linewidth=3.4, foreground=SURFACE)]
+
+
+def halo(text: Text) -> Text:
+    """给 Text 加画布底色描边，叠在数据上仍可读。"""
+    text.set_path_effects(HALO)
+    return text
+
+
 def legend(ax, handles=None, labels=None, *, loc: str = "upper left",
-           ncol: int = 1, below: bool = False) -> None:
+           ncol: int = 1, below: bool = False, filled: bool = False) -> None:
     """统一图例层：无边框、9pt、文字 INK2。
 
     位置策略：默认轴内左上（时序图数据多为日间中部峰值，左上最常空）；
-    below=True 移到轴下方居中（单幅宽图、条目多时用）；数据占住左上的
-    图以 loc 显式越位并在调用处注明原因。
+    below=True 移到轴下方居中（旧版 q1/q2 无 constrained layout 时用
+    bbox）；论文图优先 loc="outside …"（需 constrained layout）。
+    filled=True 给轴内图例铺 SURFACE 底，避免字和曲线咬在一起。
 
     Args:
         ax: 目标子图。
         handles / labels: 图例句柄与标签；缺省取轴上已绘制的系列
             （handles 可自带 label，此时 labels 传 None）。
-        loc: 轴内位置（below=True 时忽略）。
+        loc: 轴内或 outside 位置（below=True 时忽略）。
         ncol: 图例列数。
-        below: 是否放轴下方。
+        below: 是否放轴下方（兼容旧图）。
+        filled: 轴内图例是否铺实底。
     """
     kw = dict(frameon=False, fontsize=9, labelcolor=INK2)
-    pos = (dict(loc="upper center", bbox_to_anchor=(0.5, -0.18)) if below
-           else dict(loc=loc))
-    if handles is None:
-        ax.legend(ncol=ncol, **pos, **kw)
-    elif labels is None:
-        ax.legend(handles=handles, ncol=ncol, **pos, **kw)
+    if filled:
+        kw.update(frameon=True, fancybox=False, edgecolor="none",
+                  facecolor=SURFACE, framealpha=0.94, borderpad=0.45)
+    if below:
+        pos = dict(loc="upper center", bbox_to_anchor=(0.5, -0.18))
+        target = ax
+    elif isinstance(loc, str) and loc.startswith("outside"):
+        # Matplotlib 3.11：outside 只对 figure.legend 生效
+        pos = dict(loc=loc)
+        target = ax.figure
+        if handles is None:
+            handles, labels = ax.get_legend_handles_labels()
     else:
-        ax.legend(handles, labels, ncol=ncol, **pos, **kw)
+        pos = dict(loc=loc)
+        target = ax
+    if handles is None:
+        target.legend(ncol=ncol, **pos, **kw)
+    elif labels is None:
+        target.legend(handles=handles, ncol=ncol, **pos, **kw)
+    else:
+        target.legend(handles, labels, ncol=ncol, **pos, **kw)
 
 
 def price_bands(ax, p: np.ndarray) -> list[Patch]:
@@ -256,3 +282,125 @@ def save(fig, out_dir: Path, name: str, *, tight: bool = False) -> Path:
         fig.savefig(path, facecolor=SURFACE)
     plt.close(fig)
     return path
+
+
+def apply_paper_style() -> None:
+    """论文出图 rcParams：CJK 正文字体、PDF 以 TrueType 嵌入、留白与刻度。"""
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["PingFang SC", "Hiragino Sans GB", "Heiti SC",
+                            "Arial Unicode MS"],
+        "axes.unicode_minus": False,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "mathtext.fontset": "dejavusans",
+        "axes.titlepad": 8.0,
+        "axes.labelpad": 5.0,
+        "xtick.major.pad": 3.5,
+        "ytick.major.pad": 3.5,
+        "legend.borderaxespad": 0.5,
+        "legend.handlelength": 1.7,
+        "legend.handletextpad": 0.5,
+        "legend.columnspacing": 1.15,
+        "legend.labelspacing": 0.35,
+        "axes.linewidth": 0.8,
+        "figure.facecolor": SURFACE,
+        "axes.facecolor": SURFACE,
+        "savefig.facecolor": SURFACE,
+        "savefig.dpi": 300,
+        "figure.dpi": 120,
+    })
+
+
+def new_fig(w: float, h: float, *, mosaic=None, **gs_kw):
+    """新建论文画布。mosaic 非空时走 subplot_mosaic，否则单轴。"""
+    apply_paper_style()
+    if mosaic is not None:
+        fig, axes = plt.subplots(figsize=(w, h), dpi=200, facecolor=SURFACE,
+                                 layout="constrained")
+        fig.clear()
+        axes = fig.subplot_mosaic(mosaic, **gs_kw)
+        fig.set_facecolor(SURFACE)
+        fig.set_layout_engine("constrained")
+        return fig, axes
+    fig, ax = plt.subplots(figsize=(w, h), dpi=200, facecolor=SURFACE,
+                           layout="constrained")
+    return fig, ax
+
+
+def panel_title(ax, tag: str, title: str = "") -> None:
+    """子图编号。说明性文字不进图（留给文件名与题注）；
+    title 仅用于面板身份，如日期名。"""
+    label = f"({tag})" if not title else f"({tag})  {title}"
+    ax.set_title(label, loc="left", fontsize=10.5, color=INK, pad=6)
+
+
+def check_text_overlap(fig, *, min_area: float = 20.0,
+                       clip_pad: float = 28.0) -> list[str]:
+    """检查画布上文字是否互相重叠、是否画出画布。
+
+    在 savefig 之前调用。返回问题列表；空列表表示通过。
+    相邻刻度数字的轻微重叠忽略；标题与数据标注冲突会报出。
+    """
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    fig_box = fig.get_window_extent(renderer)
+    items: list[tuple[str, object, object]] = []
+    for artist in fig.findobj(Text):
+        raw = artist.get_text()
+        if not artist.get_visible() or raw is None or not str(raw).strip():
+            continue
+        try:
+            bb = artist.get_window_extent(renderer)
+        except (ValueError, RuntimeError):
+            continue
+        if bb.width < 1.0 or bb.height < 1.0:
+            continue
+        label = " ".join(str(raw).split())[:36]
+        items.append((label, bb, artist))
+
+    issues: list[str] = []
+    # 论文图一律 bbox_inches=tight，轴外 1–2 个刻度不算裁切。
+    # 只在文字明显落到画布外很远时报警。
+    far = max(clip_pad * 3.0, 80.0)
+    for label, bb, _ in items:
+        if (bb.x0 < fig_box.x0 - far
+                or bb.x1 > fig_box.x1 + far
+                or bb.y0 < fig_box.y0 - far
+                or bb.y1 > fig_box.y1 + far):
+            issues.append(f"CLIP {label!r}")
+    for i, (s1, b1, t1) in enumerate(items):
+        for s2, b2, t2 in items[i + 1:]:
+            if t1 is t2 or not b1.overlaps(b2):
+                continue
+            x0, x1 = max(b1.x0, b2.x0), min(b1.x1, b2.x1)
+            y0, y1 = max(b1.y0, b2.y0), min(b1.y1, b2.y1)
+            area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+            if area < min_area:
+                continue
+            # 两边都是刻度数字：相邻子图的轴标签擦边，由 spacing 处理，这里放过
+            def _tickish(s: str) -> bool:
+                t = s.replace("−", "-").replace(",", "").replace(" ", "")
+                t = t.replace("万", "").replace("元", "").replace("%", "")
+                return t.replace(".", "").replace("-", "").isdigit()
+            if _tickish(s1) and _tickish(s2):
+                continue
+            issues.append(f"OVERLAP {s1!r} × {s2!r} ({area:.0f}px)")
+    return issues
+
+
+def save_paper(fig, out_dir: Path, stem: str) -> tuple[Path, list[str]]:
+    """论文落盘：PNG + PDF，先做文字碰撞检查，不关闭调用方以外的逻辑。
+
+    Returns:
+        (png 路径, 碰撞/裁切问题列表)。调用方负责 plt.close。
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    issues = check_text_overlap(fig)
+    png = out_dir / f"{stem}.png"
+    pdf = out_dir / f"{stem}.pdf"
+    fig.savefig(png, facecolor=SURFACE, dpi=300,
+                bbox_inches="tight", pad_inches=0.28)
+    fig.savefig(pdf, facecolor=SURFACE,
+                bbox_inches="tight", pad_inches=0.28)
+    return png, issues
