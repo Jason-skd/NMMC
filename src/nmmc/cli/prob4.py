@@ -8,6 +8,7 @@
     uv run prob4 --line 4-3 --price-mode a1       # C4-2 复现：应逐日复现题3
     uv run prob4 --line 4-2 --price-mode d        # 读法 D 诊断（Z^D 上界）
     uv run prob4 --line 4-2 --price PR0           # 电价建模价值消融（Z^PR0）
+    uv run prob4 --line 4-2 --price-resid indep    # 价格残差独立抽样（性质 2）
     uv run prob4 --line 4-2 --nu-rule V0              # PR1-V0：拆开价格预报 vs 逐日 ν
     uv run prob4 --line 4-2 --nu-rule V1 --gamma 0.6   # ν 标定对照臂
     uv run prob4 --line 4-3 --epochs 0,6,12       # 逐级增量（继承题3 §12.2）
@@ -66,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--price-mode", choices=["r", "d", "a1"], default="r",
                         help="价格口径：r 读法 R（主交付）/ d 读法 D（诊断）/"
                              "a1 附件1 退化（C4-2 复现，ν 强制 0.472）")
+    parser.add_argument("--price-resid", choices=["joint", "indep"],
+                        default="joint",
+                        help="价格残差：joint 三元联合贴加（默认）/"
+                             "indep 同池独立抽样（性质 2 推论 2）")
     parser.add_argument("--nu-rule", choices=["V0", "V1", "V2"], default="V2",
                         help="ν^end 标定：V2 次日预报价循环对偶（默认，零"
                              "超参数）/ V1 γ·次日均价 / V0 常数 0.472")
@@ -88,10 +93,12 @@ def main(argv: list[str] | None = None) -> None:
     year = load_year(args.input)
     price = load_price(day1.p, args.attach4)
     cfgp = PriceConfig(price=args.price, wp=args.wp, nu_rule=args.nu_rule,
-                       gamma=args.gamma)
+                       gamma=args.gamma, couple=args.price_resid == "joint")
     # a1 退化口径强制 V0（C4-2 复现），标签如实反映生效规则
     nu_label = "V0" if args.price_mode == "a1" else cfgp.nu_rule
     label = f"{args.price}-{nu_label}-{args.price_mode}"
+    if args.price_resid == "indep":
+        label += "-indep"
     if args.line == "4-3" and tuple(args.epochs) != (0, 1, 2, 3):
         label += "-E" + "-".join(str(6 * m) for m in args.epochs)
     if args.no_emerg_cap:
@@ -103,7 +110,9 @@ def main(argv: list[str] | None = None) -> None:
     print(f"问题 {args.line}，配置 {label}，价格口径 = {args.price_mode}，"
           f"{nu_hint}，κ = {KAPPA:g}，滚动 {args.days} 天"
           f"（暖机 {WARMUP_DAYS} 天），"
-          f"紧急购电口径 {'u ≤ (n−x)⁺' if emerg_cap else '无上界（v5）'}")
+          f"紧急购电口径 {'u ≤ (n−x)⁺' if emerg_cap else '无上界（v5）'}"
+          f"{'，价格残差独立抽样' if args.price_resid == 'indep' else ''}",
+          flush=True)
 
     if args.line == "4-2":
         cfg = ForecastConfig(seed=args.seed)

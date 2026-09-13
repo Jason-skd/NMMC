@@ -271,18 +271,33 @@ def price_residual(price: YearPrice, p_fcasts: list[np.ndarray],
     return (price.p[i] - p_fcasts[i]) / p_fcasts[i]
 
 
+def decouple_price_days(days: np.ndarray, seed: int, salt: int) -> np.ndarray:
+    """把残差日索引独立打乱：专用 rng，不消耗情景主 rng。
+
+    联合抽样（默认）用同一历史日贴加 (ε^L, ε^R, ε^P)；独立抽样保持
+    负载/光伏残差日不变，只把 ε^P 的来源日在同池内置换——性质 2
+    推论 2 的直接消融。salt 编码 (j, m)，两线/各阶段互不撞种子。
+    """
+    src = np.asarray(days)
+    if src.size == 0:
+        return src
+    return np.random.default_rng(seed * 1_000_003 + salt).permutation(src)
+
+
 def build_scenarios(cfg: ForecastConfig, year: YearData,
                     fcasts: list[tuple[np.ndarray, np.ndarray]], j: int,
                     ell_hat: np.ndarray, r_hat: np.ndarray,
                     rng: np.random.Generator, *, price: YearPrice | None = None,
                     p_fcasts: list[np.ndarray] | None = None,
-                    p_hat: np.ndarray | None = None
+                    p_hat: np.ndarray | None = None,
+                    couple: bool = True
                     ) -> tuple[np.ndarray, np.ndarray | None]:
     """残差场景族（文档 §3.3）：把伪样本外残差日曲线整条贴到当日点预报。
 
     贴加约定：ℓ^(s) = [ℓ̂ + ε^L]_+，r^(s) = [r̂(1 + ε^R)]_+，等权。
-    给定价格输入时同日贴加电价段 ε^P（三元联合，题4 档 §4.2）：
-    p^(s) = [p̂(1 + ε^P)]_+，(ε^L, ε^R, ε^P) 取自同一历史日。
+    给定价格输入时贴加电价段 ε^P（题4 档 §4.2）：p^(s) = [p̂(1 + ε^P)]_+。
+    couple=True（默认）时 (ε^L, ε^R, ε^P) 取自同一历史日；False 时 ε^P
+    在同池内独立置换（性质 2 推论 2 消融）。
 
     Args:
         cfg: 预报层配置。
@@ -294,6 +309,7 @@ def build_scenarios(cfg: ForecastConfig, year: YearData,
         price: 附件4 全年实现电价（价格残差真值源；题4 口径）。
         p_fcasts: 历史各日当时的电价点预报 p̂_i（与 fcasts 同步滚动）。
         p_hat: 当日电价点预报。
+        couple: True = 三元联合（默认）；False = 价格残差独立抽样。
 
     Returns:
         (nets, prices)：净负荷场景 n^(s)，shape (N_s, 144)；电价场景
@@ -308,12 +324,14 @@ def build_scenarios(cfg: ForecastConfig, year: YearData,
     nets = np.empty((len(days), T))
     prices = (np.empty((len(days), T))
               if p_hat is not None else None)
+    p_days = (days if couple or prices is None
+              else decouple_price_days(days, cfg.seed, j))
     for row, i in enumerate(days):
         eps_l, eps_r = load_pv_residuals(year, fcasts, int(i))
         nets[row] = attach(ell_hat, r_hat, eps_l, eps_r)
         if prices is not None:
-            # 三元联合：ε^P 与 (ε^L, ε^R) 同日整条贴加（题4 档 §4.2）
-            eps_p = price_residual(price, p_fcasts, int(i))
+            # 联合：ε^P 与 (ε^L, ε^R) 同日；独立：同池置换后的残差日
+            eps_p = price_residual(price, p_fcasts, int(p_days[row]))
             prices[row] = np.maximum(p_hat * (1.0 + eps_p), 0.0)
     return nets, prices
 

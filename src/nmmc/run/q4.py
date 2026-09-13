@@ -156,7 +156,8 @@ def rollout_q42(year: YearData, price: YearPrice, typ_ell: np.ndarray,
         ell_hat = forecast_load(cfg, year, j, typ_ell)
         r_hat = forecast_pv(cfg, year, j, typ_r)
         p_day, p_hat, use_scn = _price_view(mode, cfgp, price, typ_p, j)
-        kwargs = (dict(price=price, p_fcasts=p_fcasts, p_hat=p_hat)
+        kwargs = (dict(price=price, p_fcasts=p_fcasts, p_hat=p_hat,
+                       couple=cfgp.couple)
                   if use_scn else {})
         scn, prices = build_scenarios(cfg, year, fcasts, j, ell_hat, r_hat,
                                       rng, **kwargs)
@@ -267,7 +268,8 @@ def rollout_q43(year: YearData, fc: YearForecast, price: YearPrice,
             r_hat = pv_point(cfg, year, fc, j, m, typ_r, weights)
             ell_hat = ell0 if m == 0 else load_point(cfg, ell0, year, j, m)
             stage_fcasts.append((ell_hat, r_hat))
-            kwargs = (dict(price=price, p_fcasts=p_fcasts, p_hat=p_hat)
+            kwargs = (dict(price=price, p_fcasts=p_fcasts, p_hat=p_hat,
+                           couple=cfgp.couple)
                       if use_scn else {})
             scn, prices = build_scenarios3(cfg, year, hist, j, m, ell_hat,
                                            r_hat, rng, **kwargs)

@@ -29,12 +29,15 @@ class PriceConfig:
         nu_rule: ν^end 标定规则，V2 次日预报价循环 LP 对偶（默认，零超
             参数）/ V1 γ·次日日均价预报（对照臂）/ V0 常数 0.472（对照）。
         gamma: V1 的 γ，默认 0.60 取题4 档 §3 第 18 条实测比值均值。
+        couple: True = 三元联合残差（默认，A21）；False = 价格残差在
+            同池内独立抽样（性质 2 推论 2 消融）。
     """
 
     price: str = "PR1"
     wp: int = 4
     nu_rule: str = "V2"
     gamma: float = 0.60
+    couple: bool = True
 
 
 def _dow_mean(hist: np.ndarray, dows: np.ndarray, dow_target: int,

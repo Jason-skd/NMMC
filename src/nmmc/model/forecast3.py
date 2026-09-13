@@ -209,7 +209,8 @@ def build_scenarios(cfg: Q3Config, year: YearData,
                     m: int, ell_hat: np.ndarray, r_hat: np.ndarray,
                     rng: np.random.Generator, *, price: YearPrice | None = None,
                     p_fcasts: list[np.ndarray] | None = None,
-                    p_hat: np.ndarray | None = None
+                    p_hat: np.ndarray | None = None,
+                    couple: bool = True
                     ) -> tuple[np.ndarray, np.ndarray | None]:
     """逐阶段分池残差场景（文档 §4.3）：伪样本外残差整条贴加。
 
@@ -220,8 +221,8 @@ def build_scenarios(cfg: Q3Config, year: YearData,
     S-c 跨阶段混池（m_ ≤ m）有放回抽样。
 
     电价段（题4 档 §4.2，给定价格输入时）：ε^P = (p − p̂)/p̂ 不分提前期，
-    S-b 下与该桶 (ε^L, ε^R) 取自同一历史日（桶内三元联合），已实现前缀
-    [0, 6τ_m) 填实现价。
+    已实现前缀 [0, 6τ_m) 填实现价。couple=True（默认）时 S-b 与该桶
+    (ε^L, ε^R) 同日（桶内三元联合）；False 时各桶对 ε^P 独立洗牌。
 
     Args:
         cfg: 题3 预报层配置。
@@ -235,6 +236,7 @@ def build_scenarios(cfg: Q3Config, year: YearData,
         p_fcasts: 历史各日当时的电价点预报 p̂_i（与 hist 同步滚动，
             ε^P 不分阶段——电价不做日内更新）。
         p_hat: 当日 0:00 电价点预报。
+        couple: True = 三元联合（默认）；False = 价格残差独立抽样。
 
     Returns:
         (nets, prices)：净负荷场景 n^(s)，shape (N_s, 144)，已实现前缀
@@ -259,6 +261,7 @@ def build_scenarios(cfg: Q3Config, year: YearData,
         eps_r = (year.r[i][seg] - r_i[seg]) / np.maximum(r_i[seg], R_EPS)
         return eps_l, eps_r
 
+    buckets = None
     # S-c：混池只取覆盖当前预报段的阶段（m_ ≤ m）有放回抽样——更晚阶段
     # 残差在近段恒为 0（已实现前缀），混入会注入伪完美预见情景
     if cfg.pool == "S-c":
@@ -294,6 +297,22 @@ def build_scenarios(cfg: Q3Config, year: YearData,
         pairs = [residuals(int(i)) for i in pool]
         days = [np.full(T - h0, int(i)) for i in pool]
 
+    price_days = days
+    if p_hat is not None and not couple and days:
+        # 专用 rng：不碰 S-b 主洗牌，负载/光伏情景与联合臂逐日同构
+        prng = np.random.default_rng(cfg.seed * 1_000_003 + j * 4 + m)
+        if buckets is not None:
+            price_orders = [prng.permutation(len(pool)) for _ in buckets]
+            price_days = []
+            for s in range(len(pool)):
+                day_s = np.zeros(T - h0, dtype=int)
+                for (lo, hi), order in zip(buckets, price_orders):
+                    day_s[lo - h0:hi - h0] = int(pool[order[s]])
+                price_days.append(day_s)
+        else:
+            order = prng.permutation(len(days))
+            price_days = [days[int(k)] for k in order]
+
     # 贴加（同题2）：ℓ^(s) = [ℓ̂+ε^L]_+，r^(s) = [r̂(1+ε^R)]_+；已实现前缀为真值
     nets = np.empty((len(pairs), T))
     prices = np.empty((len(pairs), T)) if p_hat is not None else None
@@ -302,11 +321,11 @@ def build_scenarios(cfg: Q3Config, year: YearData,
         nets[s, seg] = (np.maximum(ell_hat[seg] + eps_l, 0.0)
                         - np.maximum(r_hat[seg] * (1.0 + eps_r), 0.0))
         if prices is not None:
-            # 电价段：预报段同日贴加 ε^P（S-b 按桶同日），前缀填实现价
+            # 电价段：联合则与 L/R 同日；独立则用 price_days；前缀填实现价
             prices[s, :h0] = price.p[j, :h0]
             eps_p = np.zeros(T - h0)
-            for d in np.unique(days[s]):
-                mask = days[s] == d
+            for d in np.unique(price_days[s]):
+                mask = price_days[s] == d
                 eps_p[mask] = price_residual(price, p_fcasts, int(d))[seg][mask]
             prices[s, seg] = np.maximum(p_hat[seg] * (1.0 + eps_p), 0.0)
     return nets, prices

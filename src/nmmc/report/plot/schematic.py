@@ -1,7 +1,7 @@
-"""论文框架示意图：母线单线图、三问对照表、题 2 四层、题 3 分块时间轴。
+"""论文框架示意图：IEEE / OR 线框，不是圆角色块。
 
-流程图用 Graphviz；母线 / 对照表 / 甘特用 SVG。不再用 Matplotlib 圆角卡片。
-图面不放大标题；守恒式、层名、价签是图的内容。
+母线用单线；三问用三线表；架构用直角嵌套框；分块用时间轴。
+填色只出现在潮流箭头和图例色块上。
 """
 from __future__ import annotations
 
@@ -9,28 +9,14 @@ from pathlib import Path
 
 from nmmc.report.plot.style import (C_CH, C_DIS, C_LOAD, C_PRICE, C_PV, C_SOC,
                                     INK, INK2, MUTED, SURFACE)
-from nmmc.report.plot.svgio import render_dot, render_svg
+from nmmc.report.plot.svgio import render_svg
 
 FONT = "PingFang SC, Hiragino Sans GB, sans-serif"
-HAIR = "#d0cfc6"
-BUS = "#5a8f5c"
-
-_FILL = {
-    "grid": "#e7eef7",
-    "pv": "#eeeaf8",
-    "bus": "#d5ead8",
-    "load": "#f8e8e7",
-    "curt": "#f3f1ec",
-    "inv": "#fff4de",
-    "bat": "#dff0de",
-    "plan": "#d9f0e4",
-    "exec": "#fde6d4",
-    "settle": "#eadff3",
-    "info": "#e7eef7",
-    "q1": "#e7f2ea",
-    "q2": "#e4eef8",
-    "q3": "#f8efe2",
-}
+STROKE = "#1a1a1a"
+SW = 0.38          # ≈ 1.1 pt
+SW_BUS = 2.4
+RULE = 0.45
+RULE_MID = 0.22
 
 
 def _xml(text: str) -> str:
@@ -38,7 +24,6 @@ def _xml(text: str) -> str:
 
 
 def _mi(name: str, sub: str | None = None) -> str:
-    """斜体变量 + 下标（dy 复位，避免后续字符掉下去）。"""
     s = f'<tspan font-style="italic">{_xml(name)}</tspan>'
     if sub:
         s += (f'<tspan font-size="65%" dy="1.25">{_xml(sub)}</tspan>'
@@ -61,39 +46,27 @@ def _svg(w: float, h: float, body: str, extras: str = "") -> str:
 
 
 def _marker(mid: str, color: str) -> str:
-    return f'''<marker id="{mid}" markerWidth="6.2" markerHeight="6.2"
-      refX="5.4" refY="3.1" orient="auto">
-      <path d="M0.4,0.4 L5.8,3.1 L0.4,5.8 z" fill="{color}"/>
+    return f'''<marker id="{mid}" markerWidth="5.6" markerHeight="5.6"
+      refX="5.0" refY="2.8" orient="auto">
+      <path d="M0.2,0.3 L5.2,2.8 L0.2,5.3 z" fill="{color}"/>
     </marker>'''
 
 
 def _markers() -> str:
     pairs = {
         "arr-price": C_PRICE, "arr-pv": C_PV, "arr-load": C_LOAD,
-        "arr-curt": MUTED, "arr-ch": C_CH, "arr-dis": C_DIS, "arr-soc": C_SOC,
-        "arr-ink": INK2,
+        "arr-curt": MUTED, "arr-ch": C_CH, "arr-dis": C_DIS,
+        "arr-soc": C_SOC, "arr-ink": STROKE,
     }
     return "\n".join(_marker(k, v) for k, v in pairs.items())
 
 
-def _box(x, y, w, h, fill, accent, title, body, *, title_fs=4.0, body_fs=2.85):
-    """浅底卡片 + 左侧色条（不是 PPT 大圆角）。"""
-    rail = 2.0
-    body_svg = ""
-    if body:
-        body_svg = (
-            f'<text x="{x + 6.2}" y="{y + h - 6.4}" font-family="{FONT}" '
-            f'font-size="{body_fs}" fill="{INK2}">{body}</text>'
-        )
-    return f'''
-    <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="2.0"
-          fill="{fill}" stroke="{HAIR}" stroke-width="0.42"/>
-    <rect x="{x}" y="{y + 1.6}" width="{rail}" height="{h - 3.2}" rx="0.7"
-          fill="{accent}"/>
-    <text x="{x + 6.2}" y="{y + 9.2}" font-family="{FONT}" font-size="{title_fs}"
-          font-weight="500" fill="{INK}">{title}</text>
-    {body_svg}
-    '''
+def _rect(x, y, w, h, *, fill=SURFACE, stroke=STROKE, sw=SW, dash=None):
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
+        f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}"{d}/>'
+    )
 
 
 def _txt(x, y, content, *, fs=3.2, fill=INK, anchor="start", weight="normal"):
@@ -103,19 +76,51 @@ def _txt(x, y, content, *, fs=3.2, fill=INK, anchor="start", weight="normal"):
     )
 
 
+def _ibox(x, y, w, h, title, sub="", *, fs=3.6, fs_sub=2.65):
+    """直角白框，字贴着框，不是留白很大的卡片。"""
+    parts = [_rect(x, y, w, h)]
+    cx = x + w / 2
+    if sub:
+        parts.append(_txt(cx, y + h * 0.42, title, fs=fs, anchor="middle",
+                          weight="500"))
+        parts.append(_txt(cx, y + h * 0.72, sub, fs=fs_sub, anchor="middle",
+                          fill=INK2))
+    else:
+        parts.append(_txt(cx, y + h * 0.58, title, fs=fs, anchor="middle",
+                          weight="500"))
+    return "\n".join(parts)
+
+
+def _hline(x1, x2, y, *, sw=SW, color=STROKE):
+    return (f'<line x1="{x1}" y1="{y}" x2="{x2}" y2="{y}" '
+            f'stroke="{color}" stroke-width="{sw}"/>')
+
+
+def _vline(x, y1, y2, *, sw=SW, color=STROKE, marker=""):
+    m = f' marker-end="url(#{marker})"' if marker else ""
+    return (f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" '
+            f'stroke="{color}" stroke-width="{sw}"{m}/>')
+
+
+def _arrow(x1, y1, x2, y2, *, color=STROKE, marker="arr-ink", sw=0.42):
+    return (
+        f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" '
+        f'stroke-width="{sw}" marker-end="url(#{marker})"/>'
+    )
+
+
 # ---------------------------------------------------------------------------
-# 图 1  电气单线：四回出线落到母线，储能下挂
+# 图 1  单线图
 # ---------------------------------------------------------------------------
 
 def fig01_bus(out_dir: Path) -> tuple[Path, list[str]]:
-    """微网母线与电量流转（单线图，不是卡片墙）。"""
-    w, h = 280, 152
-    bw, bh = 58, 24
-    xs = (8.0, 76.5, 145.0, 213.5)
-    y_box = 34.0
+    """微网母线：单线 + 直角端子，不是色块墙。"""
+    w, h = 280, 138
+    bw, bh = 46.0, 14.0
+    xs = (18.0, 84.0, 150.0, 216.0)
+    y_box = 32.0
     cx = [x + bw / 2 for x in xs]
-    y_bus = 80.0
-    bus_x0, bus_x1 = 16.0, 258.0
+    y_bus = 74.0
 
     eq1 = (
         f'{_mi("g","t")} + {_mi("r","t")} + {_mi("d","t")}'
@@ -123,139 +128,108 @@ def fig01_bus(out_dir: Path) -> tuple[Path, list[str]]:
     )
     eq2 = (
         f'{_mi("S","t")} = {_mi("S","t−1")} + η{_mi("c","t")} − {_mi("d","t")}/η'
+        f'<tspan fill="{INK2}">，η = 0.9</tspan>'
     )
 
-    devices = [
-        (_FILL["grid"], C_PRICE, "外网", f'购电 {_mi("g","t")}，无功率上限'),
-        (_FILL["pv"], C_PV, "光伏", f'注入 {_mi("r","t")}，不可售回'),
-        (_FILL["load"], C_LOAD, "小区负载", f'需电 {_mi("ℓ","t")}，硬约束'),
-        (_FILL["curt"], MUTED, "弃电", f'{_mi("w","t")} 免费松弛'),
+    names = ("外网", "光伏", "小区负载", "弃电")
+    parts = [
+        _txt(w / 2, 12.5, eq1, fs=4.0, fill=INK, anchor="middle"),
+        _txt(w / 2, 22.0, eq2, fs=4.0, fill=INK, anchor="middle"),
     ]
-    boxes = []
-    for x, (fc, ac, title, body) in zip(xs, devices):
-        boxes.append(_box(x, y_box, bw, bh, fc, ac, title, body))
+    for x, name in zip(xs, names):
+        parts.append(_ibox(x, y_box, bw, bh, name, fs=3.5))
 
-    # 母线导体 + 四回 T 接（名称放在右端，不压导体）
-    bus = f'''
-    <rect x="{bus_x0}" y="{y_bus}" width="{bus_x1 - bus_x0}" height="7.0" rx="1.1"
-          fill="{_FILL["bus"]}" stroke="#8aaa8a" stroke-width="0.45"/>
-    <line x1="{bus_x0 + 3}" y1="{y_bus + 3.5}" x2="{bus_x1 - 3}" y2="{y_bus + 3.5}"
-          stroke="{BUS}" stroke-width="1.7" stroke-linecap="round"/>
-    {_txt(bus_x1 + 4.5, y_bus + 5.4, "母线", fs=3.4, fill=INK2, weight="500")}
-    '''
-    taps = []
-    for x in cx:
-        taps.append(
-            f'<circle cx="{x}" cy="{y_bus + 3.5}" r="1.55" fill="{BUS}"/>'
-        )
+    bus_x0, bus_x1 = 12.0, 262.0
+    parts.append(_hline(bus_x0, bus_x1, y_bus, sw=SW_BUS, color=STROKE))
+    parts.append(_txt(bus_x1 + 4.0, y_bus + 1.2, "母线", fs=3.3, fill=INK))
 
-    # 四回出线：源向下注入，荷向上取走
     feeders = [
-        (cx[0], "arr-price", C_PRICE, f'{_mi("g","t")}', True, -9.0),
-        (cx[1], "arr-pv", C_PV, f'{_mi("r","t")}', True, -9.0),
-        (cx[2], "arr-load", C_LOAD, f'{_mi("ℓ","t")}', False, 9.0),
-        (cx[3], "arr-curt", MUTED, f'{_mi("w","t")}', False, 9.0),
+        (cx[0], "arr-price", C_PRICE, f'{_mi("g","t")}', True),
+        (cx[1], "arr-pv", C_PV, f'{_mi("r","t")}', True),
+        (cx[2], "arr-load", C_LOAD, f'{_mi("ℓ","t")}', False),
+        (cx[3], "arr-curt", MUTED, f'{_mi("w","t")}', False),
     ]
-    lines = []
     y_box_b = y_box + bh
-    y_tap = y_bus - 0.4
-    for x, mid, color, lab, inject, dx in feeders:
+    for x, mid, color, lab, inject in feeders:
         if inject:
-            y1, y2 = y_box_b + 1.2, y_tap - 2.4
+            y1, y2 = y_box_b + 1.0, y_bus - 3.2
         else:
-            y1, y2 = y_tap - 2.4, y_box_b + 1.2
-        lines.append(
-            f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{color}" '
-            f'stroke-width="0.75" marker-end="url(#{mid})"/>'
+            y1, y2 = y_bus - 3.2, y_box_b + 1.2
+        parts.append(_arrow(x, y1, x, y2, color=color, marker=mid, sw=0.55))
+        parts.append(
+            f'<circle cx="{x}" cy="{y_bus}" r="1.45" fill="{SURFACE}" '
+            f'stroke="{STROKE}" stroke-width="0.4"/>'
         )
-        anchor = "end" if dx < 0 else "start"
-        lines.append(_txt(x + dx, (y_box_b + y_tap) / 2 + 1.1, lab,
-                          fs=3.4, fill=color, anchor=anchor))
+        dx = -7.5 if inject else 7.5
+        anchor = "end" if inject else "start"
+        parts.append(_txt(x + dx, (y_box_b + y_bus) / 2 + 0.8, lab,
+                          fs=3.2, fill=color, anchor=anchor))
 
-    # 储能下挂在母线中点
     mid = 140.0
-    inv_w, inv_h, bat_h = 58.0, 18.5, 18.5
+    inv_w, inv_h, bat_h = 50.0, 13.0, 13.0
     inv_x = mid - inv_w / 2
-    inv_y, bat_y = 98.0, 125.0
-    storage = []
-    storage.append(_box(inv_x, inv_y, inv_w, inv_h, _FILL["inv"], C_CH,
-                        "逆变器  η = 0.9", "效率损失只发生在这里",
-                        title_fs=3.5, body_fs=2.6))
-    storage.append(_box(inv_x, bat_y, inv_w, bat_h, _FILL["bat"], C_SOC,
-                        f'电池  {_mi("S","t")}',
-                        "1200 ≤ S ≤ 10800 kWh",
-                        title_fs=3.5, body_fs=2.6))
-    storage.append(
-        f'<circle cx="{mid}" cy="{y_bus + 3.5}" r="1.55" fill="{BUS}"/>'
+    inv_y, bat_y = 88.0, 114.0
+    parts.append(
+        f'<circle cx="{mid}" cy="{y_bus}" r="1.45" fill="{SURFACE}" '
+        f'stroke="{STROKE}" stroke-width="0.4"/>'
     )
-    # 母线 ↔ 逆变器：c 下、d 上
-    x_c, x_d = mid - 6.5, mid + 6.5
-    y_bus_b = y_bus + 7.0
-    storage.append(
-        f'<line x1="{x_c}" y1="{y_bus_b + 1.0}" x2="{x_c}" y2="{inv_y - 2.3}" '
-        f'stroke="{C_CH}" stroke-width="0.75" marker-end="url(#arr-ch)"/>'
-    )
-    storage.append(
-        f'<line x1="{x_d}" y1="{inv_y - 1.0}" x2="{x_d}" y2="{y_bus_b + 2.5}" '
-        f'stroke="{C_DIS}" stroke-width="0.75" marker-end="url(#arr-dis)"/>'
-    )
-    storage.append(_txt(x_c - 8.5, (y_bus_b + inv_y) / 2 + 1.0,
-                        f'{_mi("c","t")}', fs=3.1, fill=C_CH, anchor="end"))
-    storage.append(_txt(x_d + 8.5, (y_bus_b + inv_y) / 2 + 1.0,
-                        f'{_mi("d","t")}', fs=3.1, fill=C_DIS, anchor="start"))
-    # 逆变器 ↔ 电池
-    y_inv_b = inv_y + inv_h
-    storage.append(
-        f'<line x1="{x_c}" y1="{y_inv_b + 1.0}" x2="{x_c}" y2="{bat_y - 2.3}" '
-        f'stroke="{C_SOC}" stroke-width="0.75" marker-end="url(#arr-soc)"/>'
-    )
-    storage.append(
-        f'<line x1="{x_d}" y1="{bat_y - 1.0}" x2="{x_d}" y2="{y_inv_b + 2.5}" '
-        f'stroke="{C_SOC}" stroke-width="0.75" marker-end="url(#arr-soc)"/>'
-    )
-    storage.append(_txt(x_c - 8.5, (y_inv_b + bat_y) / 2 + 1.0,
-                        f'η{_mi("c","t")}', fs=2.9, fill=C_SOC, anchor="end"))
-    storage.append(_txt(x_d + 8.5, (y_inv_b + bat_y) / 2 + 1.0,
-                        f'{_mi("d","t")}/η', fs=2.9, fill=C_SOC, anchor="start"))
+    parts.append(_ibox(inv_x, inv_y, inv_w, inv_h, "逆变器  η = 0.9", fs=3.2))
+    parts.append(_ibox(inv_x, bat_y, inv_w, bat_h,
+                       f'电池  1200–10800 kWh', fs=3.0))
 
-    body = "\n".join([
-        _txt(w / 2, 13.0, eq1, fs=4.05, fill=INK, anchor="middle"),
-        _txt(w - 10, 13.0, "母线瞬时守恒", fs=3.2, fill=MUTED, anchor="end"),
-        _txt(w / 2, 23.0, eq2, fs=4.05, fill=INK, anchor="middle"),
-        _txt(w - 10, 23.0, "电池记账，η = 0.9", fs=3.2, fill=MUTED, anchor="end"),
-        *boxes, bus, *taps, *lines, *storage,
-    ])
-    return render_svg(_svg(w, h, body), out_dir, "fig01_微网母线与电量流转")
+    x_c, x_d = mid - 5.5, mid + 5.5
+    parts.append(_arrow(x_c, y_bus + 2.4, x_c, inv_y - 2.2,
+                        color=C_CH, marker="arr-ch", sw=0.5))
+    parts.append(_arrow(x_d, inv_y - 1.0, x_d, y_bus + 3.0,
+                        color=C_DIS, marker="arr-dis", sw=0.5))
+    parts.append(_txt(x_c - 7.5, (y_bus + inv_y) / 2 + 1.0,
+                      f'{_mi("c","t")}', fs=3.0, fill=C_CH, anchor="end"))
+    parts.append(_txt(x_d + 7.5, (y_bus + inv_y) / 2 + 1.0,
+                      f'{_mi("d","t")}', fs=3.0, fill=C_DIS, anchor="start"))
+
+    y_inv_b = inv_y + inv_h
+    parts.append(_arrow(x_c, y_inv_b + 1.0, x_c, bat_y - 2.2,
+                        color=C_SOC, marker="arr-soc", sw=0.5))
+    parts.append(_arrow(x_d, bat_y - 1.0, x_d, y_inv_b + 2.4,
+                        color=C_SOC, marker="arr-soc", sw=0.5))
+    parts.append(_txt(x_c - 7.5, (y_inv_b + bat_y) / 2 + 1.0,
+                      f'η{_mi("c","t")}', fs=2.8, fill=C_SOC, anchor="end"))
+    parts.append(_txt(x_d + 7.5, (y_inv_b + bat_y) / 2 + 1.0,
+                      f'{_mi("d","t")}/η', fs=2.8, fill=C_SOC, anchor="start"))
+
+    return render_svg(_svg(w, h, "\n".join(parts)), out_dir,
+                      "fig01_微网母线与电量流转")
 
 
 # ---------------------------------------------------------------------------
-# 图 2  三问 × 三维：表，不是假流程图
+# 图 2  三线表
 # ---------------------------------------------------------------------------
 
 def fig02_framework(out_dir: Path) -> tuple[Path, list[str]]:
-    """信息 / 决策 / 罚则对照表。"""
-    w, h = 280, 152
+    """信息 / 决策 / 罚则：三线表。"""
+    w, h = 280, 118
+    x0, x1 = 8.0, 272.0
+    stub_x = 22.0
+    col_x = (48.0, 122.0, 198.0)
     heads = ("信息结构", "决策节奏", "结算罚则")
-    stub_w = 28.0
-    col_x = (40.0, 120.0, 200.0)
-    col_w = 76.0
-    header_y = 8.0
     rows = [
-        ("题 1", _FILL["q1"], (
+        ("题 1", (
             ("附件 1 典型日", "电价 / 负载 / 光伏已知", "无随机"),
             (f'0:00 一次 LP',
              f'{_mi("S","144")} = {_mi("S","0")} 昼夜循环',
              f'{_mi("S","0")} 自由'),
             (f'min Σ {_mi("p")}&#x2009;{_mi("g")}', "无紧急、无偏差", "弃电免费"),
         )),
-        ("题 2", _FILL["q2"], (
+        ("题 2", (
             ("读法 C：仅历史 + 日历", "附件 2 按日解锁", "当日真值 0:00 不可见"),
             ("0:00 两阶段 SAA 锁 g", "日内在线随机 MPC", "跨日真实 SOC 链"),
             (f'{_mi("Z")} = Σ {_mi("p")}&#x2009;{_mi("g")} + 5Σ {_mi("p")}&#x2009;{_mi("u")}',
              f'{_mi("u")} 只补计划缺口',
-             f'末端估值 {_mi("ν","end")}'),
+             "末端估值 ν"
+             '<tspan font-size="65%" dy="1.25">end</tspan>'
+             '<tspan dy="-1.25">&#x200b;</tspan>'),
         )),
-        ("题 3", _FILL["q3"], (
+        ("题 3", (
             ("+ 附件 3 一日四次", "官方光伏 × 持续法融合", "负载日内比例缩放"),
             ("0:00 仍锁全天 g", "6 / 12 / 18 各锁一块 a", "内环 MPC 无权改单"),
             (f'{_mi("Z")} = Σ[{_mi("p")}&#x2009;{_mi("a")} + ½{_mi("p")}|{_mi("a")}−{_mi("g")}|]',
@@ -263,224 +237,141 @@ def fig02_framework(out_dir: Path) -> tuple[Path, list[str]]:
              f'{_mi("g")} 降为计费基准'),
         )),
     ]
-    row_h = 40.0
-    row_y = (22.0, 66.0, 110.0)
 
-    parts = []
-    for i, name in enumerate(heads):
-        parts.append(_txt(col_x[i] + col_w / 2, header_y + 8.5, name,
-                          fs=3.8, fill=INK, anchor="middle", weight="500"))
+    y_top = 8.0
+    y_head = 16.5
+    row_h = 30.0
+    y_rows = (22.0, 52.0, 82.0)
+    y_bot = 112.0
 
-    for (name, fc, cells), y in zip(rows, row_y):
-        parts.append(
-            f'<rect x="6" y="{y}" width="{w - 12}" height="{row_h}" rx="2.2" '
-            f'fill="{fc}" stroke="{HAIR}" stroke-width="0.4"/>'
-        )
-        parts.append(_txt(6 + stub_w / 2, y + row_h / 2 + 1.4, name,
-                          fs=5.2, fill=INK, anchor="middle", weight="500"))
+    parts = [
+        _hline(x0, x1, y_top, sw=RULE),
+        _hline(x0, x1, y_head, sw=RULE_MID),
+        _hline(x0, x1, y_bot, sw=RULE),
+    ]
+    for x, name in zip(col_x, heads):
+        parts.append(_txt(x, y_top + 6.2, name, fs=3.5, fill=INK, weight="500"))
+    for i, ((name, cells), y) in enumerate(zip(rows, y_rows)):
+        if i:
+            parts.append(_hline(x0, x1, y, sw=0.15, color="#bdbdb5"))
+        parts.append(_txt(stub_x, y + 16.0, name, fs=3.8, fill=INK,
+                          anchor="middle", weight="500"))
         for x, lines in zip(col_x, cells):
-            leading = 9.0
-            y0 = y + 12.2
             for k, line in enumerate(lines):
-                parts.append(_txt(x + 3.5, y0 + k * leading, line,
-                                  fs=3.15, fill=INK2))
-        # 列间细分隔，读成表而不是三张卡
-        for x in col_x:
-            parts.append(
-                f'<line x1="{x}" y1="{y + 6}" x2="{x}" y2="{y + row_h - 6}" '
-                f'stroke="{HAIR}" stroke-width="0.35"/>'
-            )
+                parts.append(_txt(x, y + 8.5 + k * 7.6, line, fs=3.05, fill=INK2))
 
     return render_svg(_svg(w, h, "\n".join(parts)), out_dir,
                       "fig02_三问递进-信息决策罚则")
 
 
 # ---------------------------------------------------------------------------
-# 图 9  Graphviz：四层流水线，执行层内嵌随机 MPC
+# 图 9  嵌套直角框
 # ---------------------------------------------------------------------------
 
 def fig09_q2_arch(out_dir: Path) -> tuple[Path, list[str]]:
-    """题 2 四层架构：预报 → 规划 → 执行（MPC）→ 结算。"""
-    dot = r'''
-digraph Q2 {
-  graph [
-    rankdir=LR
-    bgcolor="#fcfcfb"
-    fontname="PingFang SC"
-    pad="0.28"
-    nodesep="0.48"
-    ranksep="0.72"
-    splines=ortho
-    compound=true
-  ];
-  node [
-    shape=box
-    style="rounded,filled"
-    fontname="PingFang SC"
-    fontsize=11
-    penwidth=0.85
-    color="#c8c6bd"
-    margin="0.18,0.14"
-  ];
-  edge [
-    color="#6a6964"
-    arrowsize=0.48
-    penwidth=1.05
-    arrowhead=vee
-  ];
+    """题 2 四层：直角线框，执行层为嵌套框。"""
+    w, h = 280, 48
+    y, bh = 9.0, 30.0
+    bw = 44.0
+    exec_w = 102.0
+    gap = 9.5
+    x0 = 6.0
+    x_fcst = x0
+    x_plan = x_fcst + bw + gap
+    x_exec = x_plan + bw + gap
+    x_set = x_exec + exec_w + gap
 
-  fcst [fillcolor="#e7eef7", label=<
-    <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
-      <TR><TD><FONT POINT-SIZE="13"><B>预报层</B></FONT></TD></TR>
-      <TR><TD><FONT POINT-SIZE="9" COLOR="#52514e">L1 × P1 × R2</FONT></TD></TR>
-    </TABLE>>];
-  plan [fillcolor="#d9f0e4", label=<
-    <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
-      <TR><TD><FONT POINT-SIZE="13"><B>规划层</B></FONT></TD></TR>
-      <TR><TD><FONT POINT-SIZE="9" COLOR="#52514e">两阶段 SAA，锁全天 g</FONT></TD></TR>
-    </TABLE>>];
-  settle [fillcolor="#eadff3", label=<
-    <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
-      <TR><TD><FONT POINT-SIZE="13"><B>结算层</B></FONT></TD></TR>
-      <TR><TD><FONT POINT-SIZE="9" COLOR="#52514e">Σ p g + 5 Σ p u</FONT></TD></TR>
-    </TABLE>>];
+    inner_w, inner_h = 40.0, 22.0
+    inner_y = y + 6.5
+    x_now = x_exec + 8.0
+    x_fut = x_exec + exec_w - 8.0 - inner_w
 
-  subgraph cluster_exec {
-    label=<<FONT POINT-SIZE="12"><B>执行层 · 在线随机 MPC</B></FONT>>
-    fontname="PingFang SC"
-    style="rounded,filled"
-    color="#e0c4a8"
-    fillcolor="#fff7f0"
-    margin=20
-    now [fillcolor="#fde6d4", label=<
-      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
-        <TR><TD><FONT POINT-SIZE="12"><B>当步 t</B></FONT></TD></TR>
-        <TR><TD><FONT POINT-SIZE="9" COLOR="#52514e">真值 n · 水位 S</FONT></TD></TR>
-      </TABLE>>];
-    fut [fillcolor="#e4eef8", label=<
-      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
-        <TR><TD><FONT POINT-SIZE="12"><B>未来时域</B></FONT></TD></TR>
-        <TR><TD><FONT POINT-SIZE="9" COLOR="#52514e">12 个平行情景</FONT></TD></TR>
-      </TABLE>>];
-    now -> fut;
-  }
+    parts = [
+        _ibox(x_fcst, y, bw, bh, "预报层", "L1 × P1 × R2"),
+        _ibox(x_plan, y, bw, bh, "规划层", "两阶段 SAA，锁 g"),
+        _rect(x_exec, y - 4.0, exec_w, bh + 8.0),
+        _txt(x_exec + exec_w / 2, y + 1.8, "执行层 · 在线随机 MPC",
+             fs=3.0, fill=INK, anchor="middle", weight="500"),
+        _ibox(x_now, inner_y, inner_w, inner_h, "当步 t", "真值 · 水位"),
+        _ibox(x_fut, inner_y, inner_w, inner_h, "未来时域", "12 个平行情景"),
+        _ibox(x_set, y, bw, bh, "结算层", "Σ p g + 5 Σ p u"),
+    ]
+    mid_y = y + bh / 2
+    parts.append(_arrow(x_fcst + bw + 1.0, mid_y, x_plan - 2.6, mid_y))
+    parts.append(_arrow(x_plan + bw + 1.0, mid_y, x_exec - 2.6, mid_y))
+    parts.append(_arrow(x_now + inner_w + 1.0, inner_y + inner_h / 2,
+                        x_fut - 2.6, inner_y + inner_h / 2))
+    parts.append(_arrow(x_exec + exec_w + 1.0, mid_y, x_set - 2.6, mid_y))
 
-  fcst -> plan;
-  plan -> now [lhead=cluster_exec];
-  fut -> settle [ltail=cluster_exec];
-}
-'''
-    return render_dot(dot, out_dir, "fig09_题2四层架构与随机MPC", width_px=3300)
+    return render_svg(_svg(w, h, "\n".join(parts)), out_dir,
+                      "fig09_题2四层架构与随机MPC")
 
 
 # ---------------------------------------------------------------------------
-# 图 14  一日甘特 + 四档价签
+# 图 14  时间轴 + 价签色块（色块只作图例）
 # ---------------------------------------------------------------------------
 
 def fig14_q3_commit(out_dir: Path) -> tuple[Path, list[str]]:
-    """分块承诺时间轴与四档价签。"""
+    """分块承诺：一条日带，价签用 3 mm 色块而不是卡片。"""
     w = 280
     x0, x1 = 16.0, 264.0
     span = x1 - x0
-    y_bar, h_bar = 18.0, 16.5
-    segs = [
-        (_FILL["curt"], MUTED, f'{_mi("B","0")}  0–6 时',
-         "0:00 锁死，此后 a ≡ g"),
-        (_FILL["plan"], C_SOC, f'{_mi("B","1")}  6–12 时',
-         "6:00 锁定 a · 光伏预报"),
-        (_FILL["q2"], C_PRICE, f'{_mi("B","2")}  12–18 时',
-         "12:00 锁定 a · 短前置"),
-        (_FILL["exec"], C_CH, f'{_mi("B","3")}  18–24 时',
-         "18:00 锁定 a · 负载观测"),
-    ]
-    parts = []
-    n = len(segs)
+    y_bar, h_bar = 20.0, 6.0
+    n = 4
     seg_w = span / n
-    for i, (fc, accent, title, note) in enumerate(segs):
+    titles = (
+        f'{_mi("B","0")}  0–6 时',
+        f'{_mi("B","1")}  6–12 时',
+        f'{_mi("B","2")}  12–18 时',
+        f'{_mi("B","3")}  18–24 时',
+    )
+    notes = (
+        "0:00 锁死，a ≡ g",
+        "6:00 锁定 a · 光伏预报",
+        "12:00 锁定 a · 短前置",
+        "18:00 锁定 a · 负载观测",
+    )
+    parts = [_rect(x0, y_bar, span, h_bar)]
+    for i in range(n):
         x = x0 + i * seg_w
-        # 首尾随外框圆角，中间直角，读成一条日带
-        if i == 0:
-            clip = f"url(#barL)"
-        elif i == n - 1:
-            clip = f"url(#barR)"
-        else:
-            clip = ""
-        clip_attr = f' clip-path="{clip}"' if clip else ""
-        parts.append(
-            f'<rect x="{x}" y="{y_bar}" width="{seg_w}" height="{h_bar}" '
-            f'fill="{fc}" stroke="none"{clip_attr}/>'
-        )
-        parts.append(
-            f'<rect x="{x}" y="{y_bar}" width="{seg_w}" height="2.0" '
-            f'fill="{accent}"{clip_attr}/>'
-        )
-        parts.append(_txt(x + seg_w / 2, y_bar + 11.2, title,
-                          fs=3.6, fill=INK, anchor="middle", weight="500"))
-        parts.append(_txt(x + seg_w / 2, y_bar + h_bar + 8.8, note,
-                          fs=2.85, fill=INK2, anchor="middle"))
+        parts.append(_txt(x + seg_w / 2, y_bar - 4.0, titles[i],
+                          fs=3.5, fill=INK, anchor="middle", weight="500"))
+        parts.append(_txt(x + seg_w / 2, y_bar + h_bar + 16.5, notes[i],
+                          fs=2.8, fill=INK2, anchor="middle"))
         if i:
-            parts.append(
-                f'<line x1="{x}" y1="{y_bar}" x2="{x}" y2="{y_bar + h_bar}" '
-                f'stroke="{HAIR}" stroke-width="0.4"/>'
-            )
-    parts.append(
-        f'<rect x="{x0}" y="{y_bar}" width="{span}" height="{h_bar}" rx="2.0" '
-        f'fill="none" stroke="{HAIR}" stroke-width="0.5"/>'
-    )
+            parts.append(_vline(x, y_bar, y_bar + h_bar, sw=0.35))
 
-    # 时间轴
-    y_ax = y_bar + h_bar + 18.0
-    parts.append(
-        f'<line x1="{x0}" y1="{y_ax}" x2="{x1}" y2="{y_ax}" '
-        f'stroke="{HAIR}" stroke-width="0.7"/>'
-    )
+    y_ax = y_bar + h_bar
     for i, lab in enumerate(("0:00", "6:00", "12:00", "18:00", "24:00")):
         x = x0 + span * i / 4
-        parts.append(
-            f'<line x1="{x}" y1="{y_ax - 2.2}" x2="{x}" y2="{y_ax + 2.2}" '
-            f'stroke="{INK2}" stroke-width="0.6"/>'
-        )
-        parts.append(_txt(x, y_ax + 8.0, lab, fs=3.0, fill=INK2, anchor="middle"))
+        parts.append(_vline(x, y_ax, y_ax + 2.4, sw=0.4))
+        parts.append(_txt(x, y_ax + 8.0, lab, fs=2.9, fill=INK2, anchor="middle"))
 
-    chips = [
-        ("#d7e6f6", C_PRICE, "违约  0.5p", "计划多报、实际下调"),
-        ("#cfe6cd", C_SOC, "计划  1.0p", "重合部分原价"),
-        ("#f3d3a1", C_CH, "加订  1.5p", "计划少报、实际上调"),
-        ("#e8b4b2", C_LOAD, "紧急  5.0p", "末次修订后的残差"),
-    ]
-    y_chip = 78.0
-    h_chip = 20.0
-    for i, (fc, accent, title, note) in enumerate(chips):
-        gap = 1.6
-        x = x0 + i * seg_w + gap / 2
-        cw = seg_w - gap
+    chips = (
+        (C_PRICE, "违约  0.5p", "计划多报、实际下调"),
+        (C_SOC, "计划  1.0p", "重合部分原价"),
+        (C_CH, "加订  1.5p", "计划少报、实际上调"),
+        (C_LOAD, "紧急  5.0p", "末次修订后的残差"),
+    )
+    y_leg = 58.0
+    for i, (color, title, note) in enumerate(chips):
+        x = x0 + i * seg_w
         parts.append(
-            f'<rect x="{x}" y="{y_chip}" width="{cw}" height="{h_chip}" '
-            f'rx="1.6" fill="{fc}" stroke="{HAIR}" stroke-width="0.4"/>'
+            f'<rect x="{x}" y="{y_leg}" width="3.2" height="3.2" fill="{color}" '
+            f'stroke="{STROKE}" stroke-width="0.2"/>'
         )
-        parts.append(
-            f'<rect x="{x}" y="{y_chip + 1.4}" width="2.0" height="{h_chip - 2.8}" '
-            f'rx="0.7" fill="{accent}"/>'
-        )
-        parts.append(_txt(x + 6.5, y_chip + 9.0, title,
-                          fs=3.5, fill=INK, weight="500"))
-        parts.append(_txt(x + 6.5, y_chip + 16.8, note, fs=2.7, fill=INK2))
+        parts.append(_txt(x + 5.2, y_leg + 2.7, title, fs=3.3, fill=INK,
+                          weight="500"))
+        parts.append(_txt(x, y_leg + 10.0, note, fs=2.65, fill=INK2))
 
     formula = (
         f'{_mi("Z","t")}'
         f'<tspan font-size="60%" dy="-1.55">buy</tspan>'
         f'<tspan dy="1.55">&#x200b;</tspan>'
-        f' = {_mi("p","t")}&#x2009;{_mi("a","t")} + ½&#x2009;{_mi("p","t")}|{_mi("a","t")} − {_mi("g","t")}|'
+        f' = {_mi("p","t")}&#x2009;{_mi("a","t")} + ½&#x2009;{_mi("p","t")}'
+        f'|{_mi("a","t")} − {_mi("g","t")}|'
     )
-    parts.append(_txt(w / 2, 116.0, formula, fs=4.15, fill=INK, anchor="middle"))
+    parts.append(_txt(w / 2, 84.0, formula, fs=4.05, fill=INK, anchor="middle"))
 
-    extras = f'''
-    <clipPath id="barL">
-      <rect x="{x0}" y="{y_bar}" width="{seg_w + 2}" height="{h_bar}" rx="2.0"/>
-    </clipPath>
-    <clipPath id="barR">
-      <rect x="{x0 + 3 * seg_w - 2}" y="{y_bar}" width="{seg_w + 2}" height="{h_bar}" rx="2.0"/>
-    </clipPath>
-    '''
-    return render_svg(_svg(w, 128, "\n".join(parts), extras=extras), out_dir,
+    return render_svg(_svg(w, 94, "\n".join(parts)), out_dir,
                       "fig14_题3分块承诺与四档价签")
