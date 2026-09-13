@@ -1,0 +1,836 @@
+    % 为了满足 2026 年上传要求可以选择不生成封面和编号页，参考这里
+% 参考这里：https://cumcm.cnki.net/cumcm/studentHome/noticeDetail?id=c0c5220f-0226-4cd8-bce1-e1f81e1e23f6
+
+%\documentclass{cumcmthesis}
+
+\documentclass[withoutpreface,bwprint]{cumcmthesis} %去掉封面与编号页，电子版提交的时候使用。
+
+\usepackage[most]{tcolorbox}
+\usepackage{tikz}
+\usepackage{cumcm2026}
+
+\newtcolorbox{framee}[1][]{
+  enhanced,
+  skin=enhancedlast jigsaw,
+  attach boxed title to top left={xshift=-4mm,yshift=-0.5mm},
+  fonttitle=\bfseries\sffamily,
+  colbacktitle=blue!45,
+  colframe=red!50!black,
+  interior style={
+    top color=blue!10,
+    bottom color=red!10
+  },
+  boxed title style={
+    empty,
+    arc=0pt,
+    outer arc=0pt,
+    boxrule=0pt
+  },
+  underlay boxed title={
+    \fill[blue!45!white]
+      (title.north west) --
+      (title.north east) --
+      +(\tcboxedtitleheight-1mm,-\tcboxedtitleheight+1mm) --
+      ([xshift=4mm,yshift=0.5mm]frame.north east) --
+      +(0mm,-1mm) --
+      (title.south west) -- cycle;
+    \fill[blue!45!white!50!black]
+      ([yshift=-0.5mm]frame.north west) --
+      +(-0.4,0) --
+      +(0,-0.3) -- cycle;
+    \fill[blue!45!white!50!black]
+      ([yshift=-0.5mm]frame.north east) --
+      +(0,-0.3) --
+      +(0.4,0) -- cycle;
+  },
+  title={2026 年建模比赛格式变化说明},
+  #1
+}
+
+\usepackage{url}   % 网页链接
+\usepackage{subcaption} % 子标题
+\title{全国大学生数学建模竞赛编写的 \LaTeX{} 模板}
+
+%%=======如下信息已经不再需要填写========
+\tihao{A}
+\baominghao{4321}
+\schoolname{XX大学}
+\membera{ }
+\memberb{ }
+\memberc{ }
+\supervisor{ }%辅导老师
+\yearinput{2026}
+\monthinput{9}
+\dayinput{1}
+%===================================
+
+\documentclass{cumcmthesis}
+
+% ---------- 常用宏包补充 ----------
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{float}
+\usepackage{siunitx}   % 若模板未自带
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric}
+% ---------- 标题 ----------
+\title{微网与外部电网电力调控策略}
+
+\begin{document}
+
+\maketitle
+
+% ==================== 摘要 ====================
+\begin{abstract}
+% TODO: 等Q2-Q4结果出来后统一重写，先把占位写好
+微网通过在电价低谷期充电、高峰期放电，并协同光伏出力，可有效降低对外网的依赖与购电成本。本文围绕微网与外网的电力调控问题，从确定性调度逐步推进至不确定性应对，构建了由线性规划到混合整数规划的递进模型体系，综合运用了滚动时域优化、机会约束等技术，求解出了兼顾经济性与鲁棒性的购电与储能充放电策略。
+
+\textbf{针对问题一}，以母线、逆变器和电池为物理对象，建立了以日购电成本最小为目标的线性规划（LP）模型。通过数学推导证明了充放电互斥约束（0-1变量）在存在效率损耗时必然自动满足，从而简化了模型结构。同时，将初始储电量 \(E_0\) 作为决策变量内生化处理，并引入对偶理论分析了储能边际价值与电价的关系。采用单纯形法求解，结果显示：全天购电量为 59686.87 kWh，全天购电费为 35118.60 元，0:00 和 24:00 储电量均为 8550 kWh，实现了经济性与供电可靠性的平衡。
+
+\textbf{针对问题二}，在问题一基础上引入紧急购电机制……
+
+\textbf{针对问题三}，进一步考虑多时刻光伏预报与调整购电……
+
+\textbf{针对问题四}，将固定电价拓展为波动电价……
+
+本文模型具有 XX 等优点，可推广至 XX 场景。
+
+\keywords{线性规划；储能调度；微网；光伏消纳；电力调控}
+\end{abstract}
+
+% ==================== 正文 ====================
+\section{问题重述}
+\subsection{问题背景}
+随着“双碳”目标的推进与新型电力系统的建设，光伏发电等分布式能源得到了迅猛发展。然而，分布式能源具有极强的间歇性和波动性，大规模直接并网会对大电网的安全稳定运行造成冲击。微网作为解决光伏等分布式能源本地消纳、减少并网问题而快速发展起来的小型发用电系统，成为当前能源转型中的重要一环。
+
+出于经济方面的考虑，非孤岛式微网具备灵活的调度能力。它可以在外部电网（以下简称外网）电价较低或分布式能源有剩余电量的时间段，为储能设备充电；而在外网电价较高的时间段释放电能，利用峰谷电价差实现套利。然而，微网与外网的调控面临着多重矛盾：一方面，光伏出力与小区负载具有高度的不确定性，难以精准预测；另一方面，储能设备的容量、充放电功率及效率（\(\eta=0.9\)）均存在严格约束，且过度充放电会缩短设备寿命（要求储电量保持在 \(1200\text{--}10800\) kWh 之间）。
+
+因此，微网与外网的调控目的是：利用小区负载、光伏发电量和储能设备的当前储电量等数据，尽可能精准地给出微网的购电量和储能设备的充放电量，使得微网提供的电力既能满足小区的负载需求，又尽可能节省微网的购电费用。在此基础上，如何从确定性调度逐步拓展至应对电价波动与预测误差的不确定性决策，构成了本文需要解决的核心问题。% TODO: 用自己的话重述微网背景，2-3段
+\subsection{问题提出}
+本文围绕微网与外部电网的电力调控策略展开研究，根据题目要求，需依次解决以下四个递进的问题：
+
+\begin{enumerate}
+    \item \textbf{问题一：确定性日前调度策略。}在电价、小区负载全天固定，且已知光伏发电功率预测数据的条件下，制定微网每天0:00的当天计划购电策略。要求微网提供的电能不低于小区负载，且储能设备在0:00和24:00的储电量相同。需建立数学模型，求解全天各时段购电量、购电费以及储能充放电量。
+    
+    \item \textbf{问题二：负载与光伏波动下的紧急购电策略。}在电价全天固定，但小区负载和光伏发电功率随时间变化的条件下，制定每天0:00的计划购电策略。若微网实际提供的电能低于负载，需向外网紧急购电，其电价为交易时刻电价的5倍。需建立考虑紧急购电惩罚机制的优化模型，并给出指定日期的计划购电量、储能充放电量及紧急购电情况。
+    
+    \item \textbf{问题三：多时刻预报下的调整与违约机制。}在每天0:00、6:00、12:00和18:00可获得未来24小时整点光伏发电功率预报的条件下，制定当天的计划购电策略，并根据后续预报时刻制定调整购电策略。若计划购电量高于调整购电量，违约电价是交易时刻电价的50\%；若调整购电量高于计划购电量，超出部分电价是交易时刻电价的1.5倍。总购电费用包含计划购电费用、紧急购电费用和调整购电量的相关费用。需建立多阶段调整决策模型，并分析是否需要引入其他时刻的预报制定调整购电策略。
+    
+    \item \textbf{问题四：实时波动电价下的调控策略。}在实际场景中，外网电价也是实时波动的。需针对波动电价，重新建立微网当天购电策略的数学模型，并在问题二和问题三的设定下，基于附件2的小区负载和光伏发电、附件3的光伏发电预报以及附件4的实时电价数据，重新计算购电策略，分析波动电价对调度结果的影响。
+\end{enumerate}
+
+\section{问题分析}
+\subsection{问题一的分析}
+
+问题一是一个典型的确定性日前优化调度问题。在电价、小区负载全天固定且光伏发电功率预测数据已知的前提下，我们需要制定微网当天0:00的购电策略，使日购电费用最小，同时满足负载需求且储能设备在0:00与24:00的储电量相同。
+
+针对上述目标，本文从物理系统抽象与数学建模两个层面展开分析。
+
+\textbf{（1）物理系统的抽象与拓扑建模。}微网内部包含外网购电、光伏发电、储能充放电和小区负载等多个能量流，直接建立数学关系容易导致变量混乱。为此，本文将系统抽象为“母线—逆变器—电池”的拓扑结构：母线作为能量汇集的节点，外网购电量、光伏注入量和电池放电量在此处汇合，共同供给负载、电池充电及弃电；逆变器作为效率转换边界，充放电效率 \(\eta=0.9\) 导致的能量损耗全部在此处体现；电池则是储能主体，其动态变化由母线侧充放电量经过逆变器效率折算后决定。这一物理抽象为后续功率平衡方程和电池动态方程的建立提供了清晰的逻辑框架。
+
+\textbf{（2）核心难点一：充放电互斥约束的简化。}在常规储能调度问题中，为了防止电池在同一时段内既充电又放电（造成无意义的能量损耗），通常需要引入0-1整数变量构建充放电互斥约束，这会将模型转化为混合整数规划（MILP）。然而，本文通过数学推导发现：由于逆变器存在效率损耗（\(\eta=0.9 < 1\)），若某时段同时发生充电和放电，则充电过程中只有90\%的能量进入电池，而放电时需从电池取出大于母线侧实际放电量 \(d_t\) 的能量 \(d_t/\eta\)。这种“充放同步”的行为必然导致电池净能量亏损，从而使得购电成本严格增加。因此，在最优解中，充放电互斥约束是自动满足的，无需引入0-1变量。这一发现将模型从MILP化简为纯线性规划（LP），极大降低了求解难度并保证了全局最优性。
+
+\textbf{（3）核心难点二：初始储电量 \(E_0\) 的不确定性处理。}题目并未给定当天0:00的初始储电量，仅要求储能设备在0:00和24:00的储电量相同。若将 \(E_0\) 视为固定常数，则无法保证全天调度的可行性与最优性。为此，本文将 \(E_0\) 内生化处理为决策变量，将其纳入储能电量上下限约束（\(1200 \le S_t \le 10800\)）和始末电量平衡约束（\(S_0 = S_{144} = E_0\)）中，使得模型能够自动搜索出最优的日初始储电量。
+
+\textbf{（4）模型定位与求解思路。}经过上述分析，问题一的目标函数（日购电费用最小）与所有约束条件（母线平衡、电池动态、上下限约束等）均为线性，模型属于纯线性规划（LP）问题。本文拟采用单纯形法求解，并计划引入对偶理论分析电价、母线边际价值与储能边际价值之间的关系，从经济学角度验证“谷段充电、峰段放电”最优策略的内在机理。
+\subsection{问题二的分析}
+\subsection{问题三的分析}
+\subsection{问题四的分析}
+
+\section{模型假设}
+本文的建模基于以下合理假设：
+
+\begin{enumerate}
+    \item \textbf{通用物理假设：}
+    \begin{enumerate}
+        \item 假设光伏出力与小区负载在 10 分钟的时间尺度内保持恒定；
+        \item 假设储能设备的充放电效率恒为 \(\eta = 0.9\)，且不计温度、老化及自放电对效率的影响；
+        \item 假设外网供电能力不受限，微网可根据计划自由购电，且购电量与售电量满足线路传输容量约束；
+        \item 假设小区负载为刚性需求，不考虑需求响应机制对负载曲线的改变。
+    \end{enumerate}
+    
+    \item \textbf{针对问题一、二（确定性/计划性调度）：}
+    \begin{enumerate}
+        \item 假设决策时电价、光伏预测值与实际负载均已知且准确，无预测误差；
+        \item 假设紧急购电机制仅作为事后惩罚（问题二），计划购电量在制定时已尽可能满足负载需求。
+    \end{enumerate}
+
+    \item \textbf{针对问题三、四（不确定性/调整性调度）——预留占位待补充：}
+    \begin{enumerate}
+        \item 假设光伏发电功率预报数据存在误差，且误差具有一定的统计规律（如服从正态分布）；
+        \item 假设调整购电量与计划购电量之间的违约/超额费用结算在实时调度阶段完成；
+        \item 假设波动电价（问题四）可通过附件4获知，或可基于历史电价数据进行预测。
+    \end{enumerate}
+\end{enumerate}
+
+\section{符号说明}
+% TODO: 用三线表列出核心符号
+\begin{table}[H]
+\centering
+\caption{主要符号说明}
+\begin{tabular}{clc}
+\toprule
+符号 & 含义 & 单位 \\
+\midrule
+\multicolumn{3}{c}{\textbf{集合与索引}} \\
+$t$              & 日内 10 分钟时段索引，$t \in \mathcal{T} = \{1, 2, \dots, 144\}$   & ---     \\
+$k$              & 4 小时汇总块索引，$k \in \mathcal{K} = \{1, \dots, 6\}$              & ---     \\
+\midrule
+\multicolumn{3}{c}{\textbf{已知参数（附件1）}} \\
+$p_t$            & 第 $t$ 时段外网购电单价                                             & 元/kWh  \\
+$\ell_t$         & 第 $t$ 时段小区负载需电量（$\ell_t = L_t \Delta$）                   & kWh     \\
+$r_t$            & 第 $t$ 时段光伏预测发电量（$r_t = R_t \Delta$）                      & kWh     \\
+\midrule
+\multicolumn{3}{c}{\textbf{系统常数（附录1）}} \\
+$\Delta$         & 单时段时长，$\Delta = 1/6$ h                                        & h       \\
+$\eta$           & 单向充/放电效率，$\eta = 0.9$                                       & ---     \\
+$C^{\max}, D^{\max}$ & 单时段最大充/放电量（母线侧），$P^{\max}\Delta = 833.33$          & kWh     \\
+$\underline{S}, \overline{S}$ & 储电量安全下限与上限，$1200$ 与 $10800$                & kWh     \\
+\midrule
+\multicolumn{3}{c}{\textbf{决策变量}} \\
+$g_t$            & 第 $t$ 时段计划购电量（外网关口侧）                                 & kWh     \\
+$c_t$            & 第 $t$ 时段充电量（母线侧）                                         & kWh     \\
+$d_t$            & 第 $t$ 时段放电量（母线侧）                                         & kWh     \\
+$w_t$            & 第 $t$ 时段弃电量（母线侧，不设上界）                               & kWh     \\
+$S_0$            & 0:00 初始储电量（决策化）                                           & kWh     \\
+\midrule
+\multicolumn{3}{c}{\textbf{状态变量}} \\
+$S_t$            & 第 $t$ 时段末储电量（$t=1,\dots,144$）                              & kWh     \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{问题一模型的建立与求解}
+\subsection{模型的建立}
+本文以母线、逆变器和电池为物理对象，构建微网系统的能量流转模型。系统拓扑与电量流转关系如图~\ref{fig:q1_topology} 所示：外网购电 \(g_t\)、光伏注入 \(r_t\) 和电池放电 \(d_t\) 在母线处汇合，共同满足小区负载 \(\ell_t\)、电池充电 \(c_t\) 和弃电 \(w_t\)。母线作为能量汇集节点，本身不储存电能，任一时刻流入必须等于流出。
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[
+        % 统一节点风格
+        box/.style={draw, rectangle, minimum width=2.2cm, minimum height=1cm, align=center, thick},
+        busbox/.style={draw, rectangle, minimum width=2.5cm, minimum height=1.6cm, align=center, thick},
+        arrow/.style={-{Stealth[length=3mm, width=2mm]}, thick},
+        dashedarrow/.style={-{Stealth[length=3mm, width=2mm]}, thick, dashed},
+        labeltext/.style={font=\small\itshape}
+    ]
+
+    % ================= 节点定义 =================
+    % 母线（中心）
+    \node[busbox] (bus) {母线};
+    
+    % 左侧输入
+    \node[box, left=2cm of bus] (grid) {外网\\(购电付费)};
+    \node[box, below=1.2cm of grid] (pv) {光伏\\(免费注入)};
+    
+    % 右侧输出（向右移动，为注释腾出空间）
+    \node[box, right=3cm of bus] (load) {小区负载};
+    \node[box, below=1.2cm of load] (curt) {弃电\\(免费耗散)};
+    
+    % 下方储能系统
+    \node[box, below=1.5cm of bus] (inv) {逆变器\\[2pt] \(\eta = 0.9\)};
+    \node[box, below=1.5cm of inv] (bat) {电池\\[2pt] \(S_t\)};
+
+    % ================= 连线与标注 =================
+    % 外网 -> 母线
+    \draw[arrow] (grid) -- node[midway, above, labeltext] {\(g_t\)} (bus);
+    % 光伏 -> 母线
+    \draw[arrow] (pv) -- node[midway, above, labeltext] {\(r_t\)} (bus);
+    % 母线 -> 负载
+    \draw[arrow] (bus) -- node[midway, above, labeltext] {\(\ell_t\)} (load);
+    % 母线 -> 弃电
+    \draw[dashedarrow] (bus) -- node[midway, above, labeltext] {\(w_t\)} (curt);
+
+    % 母线 <-> 逆变器
+    \draw[arrow] ([xshift=-4pt]bus.south) -- node[midway, left, labeltext] {\(c_t\)} ([xshift=-4pt]inv.north);
+    \draw[arrow] ([xshift=4pt]inv.north) -- node[midway, right, labeltext] {\(d_t\)} ([xshift=4pt]bus.south);
+
+    % 逆变器 <-> 电池
+    \draw[arrow] ([xshift=-4pt]inv.south) -- node[midway, left, labeltext] {\(\eta c_t\)} ([xshift=-4pt]bat.north);
+    \draw[arrow] ([xshift=4pt]bat.north) -- node[midway, right, labeltext] {\(d_t/\eta\)} ([xshift=4pt]inv.south);
+
+    % ================= 右侧注释（放在小区负载右侧） =================
+    \node[right=1cm of load, align=left, font=\footnotesize] (notes) {
+        \textbf{母线侧计量：}\\
+        单时段充放电量\\ \(\le 833.33\) kWh\\[6pt]
+        \textbf{效率损耗发生处：}\\ \(\eta = 0.9\)\\[6pt]
+        \textbf{电池侧计量：}\\ \(\eta c_t\) 落袋，\(d_t/\eta\) 取出\\[6pt]
+        \textbf{电池运行区间：}\\ \(1200 \le S_t \le 10800\) kWh
+    };
+
+    % 虚线框把逆变器和电池框起来
+    \draw[dashed, gray] ([xshift=-1.5cm, yshift=0.5cm]inv.north west) rectangle ([xshift=1.5cm, yshift=-0.5cm]bat.south east);
+
+    \end{tikzpicture}
+    \caption{微网系统物理拓扑与电量流转图}
+    \label{fig:q1_topology}
+\end{figure}
+基于上述物理图景，本文以全天购电费用最小化为目标，建立目标函数如下：
+\begin{equation}
+\min Z = \sum_{t \in \mathcal{T}} p_t\, g_t
+\end{equation}
+约束条件主要包括以下六类：
+\begin{align}
+& g_t + r_t + d_t = \ell_t + c_t + w_t \quad \forall t \in \mathcal{T} \label{eq:balance} \\
+& S_t = S_{t-1} + \eta\, c_t - \frac{d_t}{\eta} \quad \forall t \in \mathcal{T} \label{eq:soc} \\
+& \underline{S} \le S_t \le \overline{S} \quad \forall t \in \{0\} \cup \mathcal{T} \label{eq:soc_limit} \\
+& 0 \le c_t \le C^{\max},\quad 0 \le d_t \le D^{\max} \quad \forall t \in \mathcal{T} \label{eq:power} \\
+& g_t \ge 0,\quad w_t \ge 0 \quad \forall t \in \mathcal{T} \label{eq:nonneg} \\
+& S_{144} = S_0 \label{eq:cycle}
+\end{align}
+其中，式\eqref{eq:balance}为母线侧功率平衡约束；式\eqref{eq:soc}为储能电池动态方程；式\eqref{eq:soc_limit}为储电量安全上下限；式\eqref{eq:power}为逆变器功率约束；式\eqref{eq:cycle}为昼夜循环约束。
+
+\subsection{结果与分析}
+% TODO: 表1、表2、图1（购电曲线）、图2（SOC曲线）
+图~\ref{fig:q1_raw_data} 展示了附件1典型日的原始数据。从图中可以看出，外网购电单价呈现明显的“双谷双峰”形态，谷段（00:00–06:00，11:00–13:00）电价低至约0.42元/kWh，峰段（06:00–10:00，17:00–21:00）电价高达1.4元/kWh。光伏出力主要集中在08:00–16:00，日间峰值可达约7600 kW。小区负载在全天保持相对稳定（3300–6000 kW）。净负载曲线（阴影部分）显示，在10:00–14:00期间，光伏出力大于小区负载，出现明显的电能盈余，为储能充电提供了天然的物理基础。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/q1_raw_data.png}
+    \caption{附件1典型日原始数据总览（电价、光伏出力与小区负载）}
+    \label{fig:q1_raw_data}
+\end{figure}
+
+由表~\ref{tab:q1_purchase} 和表~\ref{tab:q1_storage} 可知，最优日购电费为 35118.60 元，全天购电量为 59686.87 kWh。储能设备在 0:00 和 24:00 的储电量均为 8550 kWh，实现了昼夜循环。
+
+% ========== 表1：购电量与购电费 ==========
+\begin{table}[H]
+    \centering
+    \caption{微网在指定时间段的购电量及全天购电量和购电费}
+    \label{tab:q1_purchase}
+    \begin{tabular}{|c|c|c|c|}
+        \hline
+        时间段 & 购电量(kWh) & 时间段 & 购电量(kWh) \\
+        \hline
+        10:00-10:10 & 0.00 & 12:00-12:10 & 486.40 \\
+        \hline
+        14:00-14:10 & 0.00 & 16:00-16:10 & 394.93 \\
+        \hline
+        18:00-18:10 & 636.98 & 20:00-20:10 & 0.00 \\
+        \hline
+        \multicolumn{2}{|c|}{全天购电量(kWh)} & \multicolumn{2}{c|}{全天购电费(元)} \\
+        \hline
+        \multicolumn{2}{|c|}{59686.87} & \multicolumn{2}{c|}{35118.60} \\
+        \hline
+    \end{tabular}
+\end{table}
+
+% ========== 表2：储能充放电量与储电量 ==========
+\begin{table}[H]
+    \centering
+    \caption{储能设备在指定时间段的充放电量及0:00和24:00的储电量}
+    \label{tab:q1_storage}
+    \begin{tabular}{|c|c|c|}
+        \hline
+        时间段 & 充电量(kWh) & 放电量(kWh) \\
+        \hline
+        0:00-4:00 & 1500.00 & 0.00 \\
+        \hline
+        4:00-8:00 & 750.00 & 7073.16 \\
+        \hline
+        8:00-12:00 & 4309.17 & 1892.22 \\
+        \hline
+        12:00-16:00 & 4757.43 & 101.22 \\
+        \hline
+        16:00-20:00 & 0.00 & 6422.37 \\
+        \hline
+        20:00-24:00 & 7350.00 & 3177.63 \\
+        \hline
+        \multicolumn{1}{|c|}{0:00储电量(kWh)} & \multicolumn{2}{c|}{24:00储电量(kWh)} \\
+        \hline
+        \multicolumn{1}{|c|}{8550.00} & \multicolumn{2}{c|}{8550.00} \\
+        \hline
+    \end{tabular}
+\end{table}
+
+图~\ref{fig:q1_schedule} 展示了问题1的最优调度计划。从上联的功率流可以看出：在谷段（蓝色阴影区），微网大量购电（绿线上升），储能充电（黄柱向上），购电功率最高达到约7500 kW；在峰段（红色阴影区），储能放电（粉柱向下），购电功率显著降低。中联的储电量 \(S_t\) 轨迹显示，储能设备在谷段充满至上限（10800 kWh），在峰段放电至下限（1200 kWh），运行区间约束成为紧约束，表明储能容量得到了充分利用。上联的绿色填充面积为 \(p_t - \lambda_t\)，代表储能通过削峰填谷创造的价值空间，可以看出该价值空间在峰段尤为显著。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/q1_schedule.png}
+    \caption{问题1典型日调度计划（\(Z^* = 35,118.60\) 元）}
+    \label{fig:q1_schedule}
+\end{figure}
+
+图~\ref{fig:q1_duals} 展示了对偶变量（母线边际价值 \(\lambda_t\) 与储能边际价值 \(\nu_t\)）与电价 \(p_t\) 的对比关系。在购电时段（如0:00–6:00），母线边际价值 \(\lambda_t\) 与电价 \(p_t\) 严格重合（\(\lambda_t = p_t\)）；在放电时段（主要在峰段），\(\lambda_t\) 明显低于 \(p_t\)，说明此时电池放电成为“便宜的边际电源”；储能边际价值 \(\nu_t\) 在全周期内呈现平滑变化。进一步推导可得，储能套利的峰谷价差门槛为 \(p_j/p_i \ge 1/\eta^2 \approx 1.2346\)，而本题峰谷比高达3.76，套利空间充裕，这也解释了为何储能设备全天满幅运行。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/q1_duals.png}
+    \caption{对偶变量与电价对比图}
+    \label{fig:q1_duals}
+\end{figure}
+
+图~\ref{fig:q1_sensitivity} 展示了将初始储电量 \(S_0\) 强行钉死后重新求解 LP 的全天购电费变化曲线。当 \(S_0\) 自由时，最优解为 \(S_0^* = 8550\) kWh，总购电费 \(Z^* = 35,118.60\) 元；当固定为附录标定值 6000 kWh 时，总购电费 \(Z^{6000}\) 高出 8.35 元。曲线在 8550 附近呈现平坦的“盆地”形态，验证了将 \(S_0\) 内生化决策的合理性，也说明模型具有较好的鲁棒性。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{figures/q1_s0_sensitivity.png}
+    \caption{初始储电量 \(S_0\) 的敏感性分析}
+    \label{fig:q1_sensitivity}
+\end{figure}
+
+综上所述，问题一通过构建纯 LP 模型，求解得到全天最小购电费为 35118.60 元。优化策略表现出典型的“谷充峰放”特征，储能设备全天满幅运行，容量约束成为紧约束。对偶分析从经济学角度揭示了储能套利的内在机理，\(S_0\) 敏感性分析验证了模型的鲁棒性。该模型为后续引入紧急购电、调整策略及波动电价奠定了坚实基础。
+\section{问题二模型的建立与求解}
+\subsection{模型的建立}
+% TODO: 待填空
+\subsection{模型的求解}
+% TODO: 待填空
+\subsection{结果与分析}
+% TODO: 待填空
+
+\section{问题三模型的建立与求解}
+\subsection{模型的建立}
+% TODO: 待填空
+\subsection{模型的求解}
+\subsection{结果与分析}
+
+\section{问题四模型的建立与求解}
+\subsection{模型的建立}
+\subsection{模型的求解}
+\subsection{结果与分析}
+
+\section{模型评价与推广}
+\subsection{模型的优点}
+\subsection{模型的缺点}
+\subsection{模型的推广}
+
+% ==================== 参考文献 ====================
+\begin{thebibliography}{99}
+\bibitem{ref1} 作者. 题目[J]. 期刊, 年, 卷(期): 页码.
+\end{thebibliography}
+
+% ==================== 附录 ====================
+\newpage
+\appendix
+\section{附录}
+% TODO: 关键代码
+
+\end{document}
+\end{tcode}
+
+根据要求，电子版论文提交时需去掉封面和编号页。可以加上 \verb|withoutpreface|  选项来实现，即：
+\begin{tcode}
+    \documentclass[withoutpreface]{cumcmthesis}
+\end{tcode}
+这样就能实现了。打印的时候有超链接的地方不需要彩色，可以加上 \verb|bwprint| 选项。
+
+另外目录也是不需要的，将 \verb|\tableofcontents| 注释或删除，目录就不会出现了。
+
+团队的信息填入指定的位置，并且确保信息的正确性，以免因此白忙一场。
+
+编译记得使用 \verb|xelatex|，而不是用 \verb|pdflatex|。在命令行编译的可以按如下方式编译：
+\begin{tcode}
+	xelatex example
+\end{tcode}
+或者使用 \verb|latexmk| 来编译，更推荐这种方式。
+\begin{tcode}
+	latexmk -xelatex example
+\end{tcode}
+
+下面给出写作与排版上的一些建议。
+
+\section{图片}
+
+建模中不可避免要插入图片。图片可以分为矢量图与位图。位图推荐使用 \verb|jpg,png| 这两种格式，避免使用 \verb|bmp| 这类图片，容易出现图片插入失败这样情况的发生。矢量图一般有 \verb|pdf,eps| ，推荐使用 \verb|pdf|  格式的图片，尽量不要使用 \verb|eps| 图片，理由相同。
+
+注意图片的命名，避免使用中文来命名图片，可以用英文与数字的组合来命名图片。避免使用\verb|1,2,3| 这样顺序的图片命名方式。图片多了，自己都不清楚那张图是什么了，命名尽量让它有意义。下面是一个插图的示例代码。
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=.6\textwidth]{smokeblk}
+    \caption{电路图}
+    \label{fig:circuit-diagram}
+\end{figure}
+
+注意 \verb|figure| 环境是一个浮动体环境，图片的最终位置可能会跑动。\verb|[!h]| 中的 \verb|h| 是 here 的意思， \verb|!| 表示忽略一些浮动体的严格规则。另外里面还可以加上 \verb|btp| 选项，它们分别是 bottom, top, page 的意思。只要这几个参数在花括号里面，作用是不分先后顺序的。page 在这里表示浮动页。
+
+\verb|\label{fig:circuit-diagram}| 是一个标签，供交叉引用使用的。例如引用图片 \verb|\cref{fig:circuit-diagram}| 的实际效果是\cref{fig:circuit-diagram}。图片是自动编号的，比起手动编号，它更加高效。\verb|\cref{label}| 由 \verb|cleveref| 宏包提供，比普通的 \verb|\ref{label}| 更加自动化。 \verb|label| 要确保唯一，命名方式推荐用图片的命名方式。
+
+图片并排的需求解决方式多种多样，下面用 \verb|minipage| 环境来展示一个简单的例子。注意，以下例子用到了 \verb|subcaption| 命令，需要加载 subcaption 宏包。
+
+\begin{figure}
+    \centering
+    \begin{minipage}[c]{0.3\textwidth}
+        \centering
+        \includegraphics[width=0.95\textwidth]{f1}
+        \subcaption{流程图}
+        \label{fig:sample-figure-a}
+    \end{minipage}
+    \begin{minipage}[c]{0.3\textwidth}
+        \centering
+        \includegraphics[width=0.95\textwidth]{f1}
+        \subcaption{流程图}
+        \label{fig:sample-figure-b}
+    \end{minipage}
+    \begin{minipage}[c]{0.3\textwidth}
+        \centering
+        \includegraphics[width=0.95\textwidth]{f1}
+        \subcaption{流程图}
+        \label{fig:sample-figure-c}
+    \end{minipage}
+    \caption{多图并排示例}
+    \label{fig:sample-figure}
+\end{figure}
+这相当于整体是一张大图片，大图片引用是\cref{fig:sample-figure}，子图引用别分是\cref{fig:sample-figure-a}、\cref{fig:sample-figure-b}、\cref{fig:sample-figure-c}。
+
+如果原本两张图片的高度不同，但是希望它们缩放后等高的排在同一行，参考这个例子：
+\begin{figure}
+    \centering
+    \begin{minipage}[c]{0.48\textwidth}
+        \centering
+        \includegraphics[height=0.2\textheight]{cat}
+        \subcaption{一只猫}
+    \end{minipage}
+    \begin{minipage}[c]{0.48\textwidth}
+        \centering
+        \includegraphics[height=0.2\textheight]{smokeblk}
+        \subcaption{电路图}
+    \end{minipage}
+    \caption{多图并排示例}
+\end{figure}
+
+\section{绘制普通三线表格}
+表格应具有三线表格式，因此常用 booktabs宏包，其标准格式如\cref{tab:001}~所示。
+\begin{table}[!htbp]
+    \caption{标准三线表格}\label{tab:001} \centering
+    \begin{tabular}{ccccc}
+        \toprule[1.5pt]
+        $D$(in) & $P_u$(lbs) & $u_u$(in) & $\beta$ & $G_f$(psi.in)\\
+        \midrule[1pt]
+        5 & 269.8 & 0.000674 & 1.79 & 0.04089\\
+        10 & 421.0 & 0.001035 & 3.59 & 0.04089\\
+        20 & 640.2 & 0.001565 & 7.18 & 0.04089\\
+        \bottomrule[1.5pt]
+    \end{tabular}
+\end{table}
+
+其绘制表格的代码及其说明如下。
+\begin{tcode}
+    \begin{table}[!htbp]
+        \caption[标签名]{中文标题}
+        \begin{tabular}{cc...c}
+            \toprule[1.5pt]
+            表头第1个格   & 表头第2个格   & ... & 表头第n个格  \\
+            \midrule[1pt]
+            表中数据(1,1) & 表中数据(1,2) & ... & 表中数据(1,n)\\
+            表中数据(2,1) & 表中数据(2,2) & ... & 表中数据(2,n)\\
+            ...................................................\\
+            表中数据(m,1) & 表中数据(m,2) & ... & 表中数据(m,n)\\
+            \bottomrule[1.5pt]
+        \end{tabular}
+    \end{table}
+\end{tcode}
+
+\bigskip
+
+table环境是一个将表格嵌入文本的浮动环境。tabular环境的必选参数由每列对应一个格式字符所组成：c表示居中，l表示左对齐，r表示右对齐，其总个数应与表的列数相同。此外，\verb|@{文本}|可以出现在任意两个上述的列格式之间，其中的文本将被插入每一行的同一位置。表格的各行以\verb|\\|分隔，同一行的各列则以\&分隔。 \verb|\toprule| 、\verb|\midrule| 和 \verb|\bottomrule| 三个命令是由booktabs宏包提供的，其中 \verb|\toprule| 和 \verb|\bottomrule| 分别用来绘制表格的第一条（表格最顶部）和第三条（表格最底部）水平线， \verb|\midrule| 用来绘制第二条（表头之下）水平线，且第一条和第三条水平线的线宽为 1.5pt ，第二条水平线的线宽为 1pt 。引用方法与图片的相同。
+
+\section{公式}
+
+数学建模必然涉及不少数学公式的使用。下面简单介绍一个可能用得上的数学环境。
+
+首先是行内公式，例如 $ \theta $ 是角度。行内公式使用 \verb|$  $| 包裹。
+
+行间公式不需要编号的可以使用 \verb|\[  \]| 包裹，例如
+\[
+E=mc^2
+\]
+其中 $ E $ 是能量，$ m $ 是质量，$ c $ 是光速。
+
+如果希望某个公式带编号，并且在后文中引用可以参考下面的写法：
+\begin{equation}
+E=mc^2
+\label{eq:energy}
+\end{equation}
+式\cref{eq:energy}是质能方程。
+
+多行公式有时候希望能够在特定的位置对齐，以下是其中一种处理方法。
+\begin{align}
+P & = UI \\
+& = I^2R
+\end{align}
+\verb|&| 是对齐的位置， \verb|&| 可以有多个，但是每行的个数要相同。
+
+矩阵的输入也不难。
+\[
+\mathbf{X} = \left(
+    \begin{array}{cccc}
+    x_{11} & x_{12} & \ldots & x_{1n}\\
+    x_{21} & x_{22} & \ldots & x_{2n}\\
+    \vdots & \vdots & \ddots & \vdots\\
+    x_{n1} & x_{n2} & \ldots & x_{nn}\\
+    \end{array} \right)
+\]
+
+分段函数这些可以用 \verb|case| 环境，但是它要放在数学环境里面。
+\[
+f(x) =
+    \begin{cases}
+        0 &  x \text{为无理数} ,\\
+        1 &  x \text{为有理数} .
+    \end{cases}
+\]
+在数学环境里面，字体用的是数学字体，一般与正文字体不同。假如要公式里面有个别文字，则需要把这部分放在 \verb|text| 环境里面，即 \verb|\text{文本环境}| 。
+
+公式中个别需要加粗的字母可以用 \verb|$\bm{math symbol}$| 。如 $ \alpha a\bm{\alpha a} $ 。
+
+以上仅简单介绍了基础的使用，对于更复杂的需求，可以阅读相关的宏包手册，如 \href{http://texdoc.net/texmf-dist/doc/latex/amsmath/amsldoc.pdf}{amsmath}。
+
+希腊字母这些如果不熟悉，可以去查找符号文件 \href{http://mirrors.ctan.org/info/symbols/comprehensive/symbols-a4.pdf}{symbols-a4.pdf} ，也可以去 \href{http://detexify.kirelabs.org/classify.html}{detexify} 网站手写识别。另外还有数学公式识别软件 \href{https://mathpix.com/}{mathpix} 。
+
+下面简单介绍一下定理、证明等环境的使用。
+\begin{definition}
+    定义环境
+    \label{def:nosense}
+\end{definition}
+\cref{def:nosense}除了告诉你怎么使用这个环境以外，没有什么其它的意义。
+
+除了 definition 环境，还可以使用 theorem 、lemma、corollary、assumption、conjecture、axiom、principle、problem、example、proof、solution 这些环境，根据论文的实际需求合理使用。
+
+\begin{theorem}
+    这是一个定理。
+    \label{thm:example}
+\end{theorem}
+由\cref{thm:example}我们知道了定理环境的使用。
+
+\begin{lemma}
+    这是一个引理。
+    \label{lem:example}
+\end{lemma}
+由\cref{lem:example}我们知道了引理环境的使用。
+
+\begin{corollary}
+    这是一个推论。
+    \label{cor:example}
+\end{corollary}
+由\cref{cor:example}我们知道了推论环境的使用。
+
+\begin{assumption}
+    这是一个假设。
+    \label{asu:example}
+\end{assumption}
+由\cref{asu:example}我们知道了假设环境的使用。
+
+\begin{conjecture}
+    这是一个猜想。
+    \label{con:example}
+\end{conjecture}
+由\cref{con:example}我们知道了猜想环境的使用。
+
+\begin{axiom}
+    这是一个公理。
+    \label{axi:example}
+\end{axiom}
+由\cref{axi:example}我们知道了公理环境的使用。
+
+\begin{principle}
+    这是一个定律。
+    \label{pri:example}
+\end{principle}
+由\cref{pri:example}我们知道了定律环境的使用。
+
+\begin{problem}
+    这是一个问题。
+    \label{pro:example}
+\end{problem}
+由\cref{pro:example}我们知道了问题环境的使用。
+
+\begin{example}
+    这是一个例子。
+    \label{exa:example}
+\end{example}
+由\cref{exa:example}我们知道了例子环境的使用。
+
+\begin{proof}
+    这是一个证明。
+    \label{prf:example}
+\end{proof}
+由\cref{prf:example}我们知道了证明环境的使用。
+
+\begin{solution}
+    这是一个解。
+    \label{sol:example}
+\end{solution}
+由\cref{sol:example}我们知道了解环境的使用。
+
+
+
+\section{其它小功能}
+\subsection{脚注}
+
+利用 \verb|\footnote{具体内容}| 可以生成脚注\footnote{脚注可以补充说明一些东西}。
+
+\subsection{无序列表与有序列表}
+
+无序列表是这样的：
+\begin{itemize}
+    \item one
+    \item two
+    \item ...
+\end{itemize}
+
+有序列表是这样子的：
+\begin{enumerate}
+    \item one
+    \item two
+    \item ...
+\end{enumerate}
+
+\subsection{字体加粗与斜体}
+
+如果想强调部分内容，可以使用加粗的手段来实现。加粗字体可以用 \verb|\textbf{加粗}| 来实现。例如： \textbf{这是加粗的字体。 This is bold fonts} 。
+
+中文字体没有斜体设计，但是英文字体有。\textit{斜体 Italics}。
+
+\section{参考文献与引用}
+
+参考文献对于一篇正式的论文来说是必不可少的，在建模中重要的参考文献当然应该列出。\LaTeX{}在这方面的功能也是十分强大的，下面进介绍一个比较简单的参考文献制作方法。有兴趣的可以学习 \verb|bibtex| 或 \verb|biblatex| 的使用。
+
+\LaTeX{}的入门书籍可以看《\LaTeX{}入门》\cite{liuhaiyang2013latex}。这是一个简单的引用，用 \verb|\cite{bibkey}| 来完成。要引用成功，当然要维护好 bibitem 了。下面是个简单的例子。
+
+
+若未使用 AI, 需要在参考文献前使用命令~\verb|\CumcmAINotUsed| 加入如下段落:
+
+\CumcmAINotUsed
+
+若使用了 AI, 需要使用命令 \verb|\CumcmAIUsed{<用途>}| 加入如下段落:
+\CumcmAIUsed{[简要用途, 如语言润色, 代码调试等]}
+
+支撑材料格式如下.
+
+\section*{AI工具使用详情}
+
+\subsection*{工具信息}
+\noindent
+\begin{tabularx}{\textwidth}{@{}XX@{}}
+  \toprule
+  项目 & 填写内容 \\
+  \midrule
+  工具名称 & \textit{填写实际使用的产品或工具名称} \\
+  版本或型号 & \textit{填写实际版本、模型名称或可识别的型号} \\
+  使用日期 & \textit{YYYY-MM-DD 至 YYYY-MM-DD} \\
+  \bottomrule
+\end{tabularx}
+
+\subsection*{具体使用目的和环节}
+逐项说明 AI 用于语言润色、代码调试、资料整理或其他环节；不得笼统写“辅助论文”。明确其输入、输出及对应论文位置。
+
+\subsection*{主要提示方式与使用过程}
+说明主要提示策略与迭代过程，可附具有代表性的交互片段。不要包含参赛者姓名、学校或赛区信息。
+
+\subsection*{采纳、人工修改与核验}
+除语言润色外，逐项记录 AI 输出是否采纳、由谁进行何种人工修改、采用何种数据或实验复核，以及最终结论是否发生变化。
+
+\subsection*{人工核验清单}
+\begin{enumerate}[label=\arabic*)]
+  \item 核对公式推导、单位、边界条件和符号一致性；
+  \item 在独立环境中运行全部代码并复现论文表图；
+  \item 核验引用、数据来源和事实陈述；
+  \item 确认核心建模与分析由参赛队主导；
+  \item 确认论文声明与本详情文件一致。
+\end{enumerate}
+
+
+%参考文献
+\begin{thebibliography}{9}%宽度9
+    \bibitem[1]{liuhaiyang2013latex}
+    刘海洋.
+    \newblock \LaTeX {}入门\allowbreak[J].
+    \newblock 电子工业出版社, 北京, 2013.
+    \bibitem[2]{mathematical-modeling}
+    全国大学生数学建模竞赛论文格式规范 (2023 年 修改).
+    \bibitem{3} \url{https://www.latexstudio.net}
+\end{thebibliography}
+  
+\newpage
+%附录
+\begin{appendices}
+
+\section{模板所用的宏包}
+\begin{table}[htbp]
+    \centering
+    \caption{宏包罗列}
+    \begin{tabular}{ccccc}
+        \toprule
+        \multicolumn{5}{c}{模板中已经加载的宏包} \\
+        \midrule
+        amsbsy & amsfonts & {amsgen} & {amsmath} & {amsopn} \\
+        amssymb & amstext & {appendix} & {array} & {atbegshi} \\
+        atveryend & auxhook & {bigdelim} & {bigintcalc} & {bigstrut} \\
+        bitset & bm    & {booktabs} & {calc} & {caption} \\
+        caption3 & CJKfntef & {cprotect} & {ctex} & {ctexhook} \\
+        ctexpatch & enumitem & {etexcmds} & {etoolbox} & {everysel} \\
+        expl3 & fix-cm & {fontenc} & {fontspec} & {fontspec-xetex} \\
+        geometry & gettitlestring & {graphics} & {graphicx} & {hobsub} \\
+        hobsub-generic & hobsub-hyperref & {hopatch} & {hxetex} & {hycolor} \\
+        hyperref & ifluatex & {ifpdf} & {ifthen} & {ifvtex} \\
+        ifxetex & indentfirst & {infwarerr} & {intcalc} & {keyval} \\
+        kvdefinekeys & kvoptions & {kvsetkeys} & {l3keys2e} & {letltxmacro} \\
+        listings & longtable & {lstmisc} & {ltcaption} & {ltxcmds} \\
+        multirow & nameref & {pdfescape} & {pdftexcmds} & {refcount} \\
+        rerunfilecheck & stringenc & {suffix} & {titletoc} & {tocloft} \\
+        trig  & ulem  & {uniquecounter} & {url} & {xcolor} \\
+        xcolor-patch & xeCJK & {xeCJKfntef} & {xeCJK-listings} & {xparse} \\
+        xtemplate & zhnumber &       &       &  \\
+        \bottomrule
+    \end{tabular}%
+    \label{tab:addlabel}%
+\end{table}%
+
+以上宏包都已经加载过了，不要重复加载它们。
+
+\section{排队算法--matlab 源程序}
+
+\begin{lstlisting}[language=matlab]
+kk=2;[mdd,ndd]=size(dd);
+while ~isempty(V)
+[tmpd,j]=min(W(i,V));tmpj=V(j);
+for k=2:ndd
+[tmp1,jj]=min(dd(1,k)+W(dd(2,k),V));
+tmp2=V(jj);tt(k-1,:)=[tmp1,tmp2,jj];
+end
+tmp=[tmpd,tmpj,j;tt];[tmp3,tmp4]=min(tmp(:,1));
+if tmp3==tmpd, ss(1:2,kk)=[i;tmp(tmp4,2)];
+else,tmp5=find(ss(:,tmp4)~=0);tmp6=length(tmp5);
+if dd(2,tmp4)==ss(tmp6,tmp4)
+ss(1:tmp6+1,kk)=[ss(tmp5,tmp4);tmp(tmp4,2)];
+else, ss(1:3,kk)=[i;dd(2,tmp4);tmp(tmp4,2)];
+end;end
+dd=[dd,[tmp3;tmp(tmp4,2)]];V(tmp(tmp4,3))=[];
+[mdd,ndd]=size(dd);kk=kk+1;
+end; S=ss; D=dd(1,:);
+ \end{lstlisting}
+
+未使用 AI 使用cheng bi sai zh使用了 AI wei shi yong
+
+ \section{规划解决程序--lingo源代码}
+
+\begin{lstlisting}[language=c]
+kk=2;
+[mdd,ndd]=size(dd);
+while ~isempty(V)
+    [tmpd,j]=min(W(i,V));tmpj=V(j);
+for k=2:ndd
+    [tmp1,jj]=min(dd(1,k)+W(dd(2,k),V));
+    tmp2=V(jj);tt(k-1,:)=[tmp1,tmp2,jj];
+end
+    tmp=[tmpd,tmpj,j;tt];[tmp3,tmp4]=min(tmp(:,1));
+if tmp3==tmpd, ss(1:2,kk)=[i;tmp(tmp4,2)];
+else,tmp5=find(ss(:,tmp4)~=0);tmp6=length(tmp5);
+if dd(2,tmp4)==ss(tmp6,tmp4)
+    ss(1:tmp6+1,kk)=[ss(tmp5,tmp4);tmp(tmp4,2)];
+else, ss(1:3,kk)=[i;dd(2,tmp4);tmp(tmp4,2)];
+end;
+end
+    dd=[dd,[tmp3;tmp(tmp4,2)]];V(tmp(tmp4,3))=[];
+    [mdd,ndd]=size(dd);
+    kk=kk+1;
+end;
+S=ss;
+D=dd(1,:);
+ \end{lstlisting}
+\end{appendices}
+
+\end{document} 
