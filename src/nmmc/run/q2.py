@@ -73,9 +73,9 @@ def cash_cost(p: np.ndarray, g: np.ndarray, u: np.ndarray,
 def solve_plan(p: np.ndarray, scn: np.ndarray, probs: np.ndarray, s0: float,
                nu_end: float, kappa: float, emerg_cap: bool,
                tol: float = CAP_TOL,
-               max_passes: int = CAP_MAX) -> tuple[np.ndarray,
-                                                   np.ndarray | None,
-                                                   float, int]:
+               max_passes: int = CAP_MAX,
+               p_scn: np.ndarray | None = None
+               ) -> tuple[np.ndarray, np.ndarray | None, float, int]:
     """日前规划：新口径下带 u 上界，迭代至不动点（文档 §6.1）。
 
     上界 (n^s − g)⁺ 依赖第一阶段决策 g，作为 g 的上界约束非凸，故规划层
@@ -98,19 +98,21 @@ def solve_plan(p: np.ndarray, scn: np.ndarray, probs: np.ndarray, s0: float,
         emerg_cap: True 用新口径（带上界），False 退回 v5 无上界。
         tol: 不动点判据。
         max_passes: 轮数上限。
+        p_scn: 情景电价 p^(s)（题4：一阶段折叠价 p 之外逐情景计价）；
+            None 即常数价口径（题2/题3，全时域用 p）。
 
     Returns:
         (g, u_cap, resid, iters)：计划购电量；情景上界（旧口径为 None）；
         末轮残差；实际轮数（旧口径为 0.0 / 0）。
     """
-    plan = solve_planning(p, scn, probs, s0, nu_end, kappa)
+    plan = solve_planning(p, scn, probs, s0, nu_end, kappa, p_scn=p_scn)
     if not emerg_cap:
         return plan.g, None, 0.0, 0
     resid, k = 0.0, 0
     for k in range(1, max_passes + 1):
         prev = plan.g
         plan = solve_planning(p, scn, probs, s0, nu_end, kappa,
-                              emergency_cap(scn, prev))
+                              emergency_cap(scn, prev), p_scn=p_scn)
         resid = float(np.abs(plan.g - prev).sum()
                       / max(float(plan.g.sum()), 1e-9))
         if resid <= tol:

@@ -23,15 +23,16 @@ from nmmc.model.q2 import KAPPA
 from nmmc.report.common import (PAPER_SLOTS, md_table, py_date,
                                 write_battery_sheet, write_emergency_sheet)
 from nmmc.report.q2 import EPS_EMERG, PRICE_BANDS, PAPER_DATES, report_days
+from nmmc.run.q2 import CAP_TOL
 from nmmc.run.q4 import DayResult
 
 TEMPLATE_42 = ATTACH / "附件5" / "result4-2.xlsx"
 TEMPLATE_43 = ATTACH / "附件5" / "result4-3.xlsx"
 SOC_EPS = 1e-6        # 对账容差（兼"储能耗尽"判定容差），kWh
 
-# 紧急购电归因（题4 档 §7.6 四分类，hjc 原实现本地化）：③不分囤电/配给——
-# ③a/③b 拆分判据属题2 v6 封顶口径（u ≤ (n−g)⁺ 下囤电恒 0），题4 维持
-# hjc 的无上界口径，四分类不受题2 标签演进影响。
+# 紧急购电归因（题4 档 §7.6 四分类，hjc 原实现本地化）：③不分囤电/配给。
+# v7 对齐后默认带上界（u ≤ (n−x)⁺），③囤电结构上恒 0、只剩配给型 ③b，
+# 四分类标签在两种口径下均无需改动。
 SOC_RICH = 3000.0     # ③"有电不放"的水位判据，kWh
 ATTR_LABELS = {1: "①功率强制", 2: "②储能耗尽", 3: "③有电不放", 4: "④低水位带"}
 
@@ -203,6 +204,9 @@ def summarize(days: list[DayResult], year: YearData, price: YearPrice,
         "C4-14 max(u·w)": float(max(c["uw_max"] for c in checks)),
         "C4-14 u∧c 时段数": int(sum(c["u_and_c"] for c in checks)),
         "C9 序关系违例天数": int(sum(c["c9_bad"] for c in checks)),
+        "C4-16 上界收敛残差 max": float(max(d.cap_resid for d in rep)),
+        "C4-16 序列线性化轮数 max": int(max(d.cap_iters for d in rep)),
+        "C4-16 未收敛天数": int(sum(d.cap_resid > CAP_TOL for d in rep)),
         "日费用偏度": float(skew(z_day)),
         "日费用 P95/中位": float(np.quantile(z_day, 0.95) / np.median(z_day)),
         "紧急购电天数": int((u_all > EPS_EMERG).any(axis=1).sum()),
@@ -368,7 +372,9 @@ class SummaryMd:
             for k in ("C4-4 结算价残差 max", "C4-14 前缀偏差 max",
                       "C6 对账残差 max", "C7 能量守恒残差 max",
                       "C4-14 max(c·d)", "C4-14 max(u·w)",
-                      "C4-14 u∧c 时段数", "C9 序关系违例天数")])
+                      "C4-14 u∧c 时段数", "C9 序关系违例天数",
+                      "C4-16 上界收敛残差 max", "C4-16 序列线性化轮数 max",
+                      "C4-16 未收敛天数")])
         emerg = md_table(["统计量", "数值"], [
             ("发生天数 / 时段数", f"{s['紧急购电天数']} / {s['天数']} 天，"
              f"{s['紧急购电时段数']} 个时段（频率 {pct(s['缺口时段频率'])}）"),
@@ -436,6 +442,9 @@ class SummaryMd:
   不确定性只经协方差通道进入目标）。
 - 执行层当步用实现价（交易时刻电价）、未来分支用情景价；结算一律实现价
   （C4-4）。
+- 紧急购电口径与题2 v6 / 题3 v7 同款：u ≤ (n−g)⁺（4-2）/ u ≤ (n−a)⁺
+  （4-3），0:00 规划层序列线性化到不动点（C4-16）；--no-emerg-cap 退回
+  v5 无上界（口径消融）。
 - ν^end 逐日标定（V2 默认：次日预报价循环 LP 对偶，零超参数）；年末
   SOC 修正用 ν^end^(365)，非 0.472（C4-15）。
 - 「全天购电费」为事后结算量：0:00 承诺电量 g、单价待实现（A23）；
